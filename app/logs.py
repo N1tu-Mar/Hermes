@@ -57,7 +57,8 @@ class JsonFormatter(logging.Formatter):
                 out[k] = var.get()
         for k in ("campaign_id", "kind", "status", "duration_ms", "method", "path", "user_id"):
             if hasattr(record, k):
-                out[k] = redact(getattr(record, k))
+                v = getattr(record, k)
+                out[k] = v if isinstance(v, int | float) else redact(v)
         if record.exc_info:
             out["exc"] = redact(self.formatException(record.exc_info))
         return json.dumps(out, ensure_ascii=False)

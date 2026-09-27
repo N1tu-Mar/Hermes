@@ -1,0 +1,26 @@
+# systemd unit for remote mode. Install to /etc/systemd/system/hermes.service.
+[Unit]
+Description=HERMES (remote mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hermes
+Group=hermes
+WorkingDirectory=/opt/hermes
+# Holds HERMES_MODE, HERMES_PUBLIC_URL, HERMES_SECRET_KEY, DATA_ROOT, OPENAI_API_KEY (optional). Mode 0600, owned by root.
+EnvironmentFile=/etc/hermes/hermes.env
+ExecStart=/opt/hermes/.venv/bin/python -m app.api
+# SIGTERM triggers graceful shutdown: running jobs get SHUTDOWN_GRACE_SECONDS, then are checkpointed.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/hermes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+# Caddy terminates TLS (automatic Let's Encrypt certificates) and forwards to HERMES on loopback.
+hermes.example.org {
+	encode gzip
+	reverse_proxy 127.0.0.1:8765 {
+		header_up X-Forwarded-Proto https
+	}
+	request_body {
+		max_size 1MB
+	}
+}

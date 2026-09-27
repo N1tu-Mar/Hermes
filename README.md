@@ -16,16 +16,23 @@ keeping consequential actions visible and under human control.
 The design principle is **high-volume capability without low-quality outreach**. HERMES automates repetitive research,
 organization, personalization, and drafting, but requires review before an email enters Gmail.
 
-One Python process (FastAPI + asyncio workers + SQLite), plain HTML/CSS/JS UI, optional stdio MCP adapter.
+One Python process (FastAPI + asyncio workers + SQLite), plain HTML/CSS/JS UI, optional stdio MCP adapter. Local
+single-user mode is the default and needs no account setup. An optional remote mode adds logins and per-user data
+isolation behind HTTPS (see [docs/remote-deployment.md](docs/remote-deployment.md)).
 
 ## Run
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3.13 -m venv .venv
+.venv/bin/pip install --require-hashes --no-deps -r requirements-dev.lock   # pinned, hash-checked
+.venv/bin/python -m playwright install chromium   # only needed for the browser test
 cp .env.example .env            # leave OPENAI_API_KEY empty for demo mode
-.venv/bin/python -m app.api     # prints http://127.0.0.1:8765/?t=<token>; open that exact link
-.venv/bin/python -m pytest -q   # tests
+.venv/bin/python -m app.api     # validates config, prints http://127.0.0.1:8765/?t=<token>; open that exact link
+.venv/bin/python -m pytest -q   # full suite (unit, workflow, remote isolation, load, browser)
 ```
+
+Operating the app (checks, logs, health endpoints, migrations and rollback, encrypted backup and restore, deletion
+and retention, shutdown behavior) is covered in [docs/operations.md](docs/operations.md).
 
 **Demo mode** (no `OPENAI_API_KEY`): discovery/research/writing use fictional fixture people labeled "(demo)", with
 pages served locally at `/demo/pages/...` so source links open. One person per list has an unreachable page and one
@@ -67,10 +74,15 @@ same approval rules apply: Gmail drafts are only created for drafts a human appr
 - `data/cache.sqlite3`: page cache (7 days, failures 1 hour), research cache (14 days), drafts keyed by
   `(campaign_id, candidate_id, template_version)`, jobs, usage counters, activity log. Not a substitute for the JSON files.
 - Secrets: `.env` (git-ignored) and `~/.config/outreach/`. Nothing secret goes in campaign files or the browser.
+- Remote mode: `data/auth.sqlite3` (accounts, hashed sessions, encrypted provider credentials) and one full data root
+  per user under `data/users/<id>/`.
+- Backups: `python -m app.ops backup FILE` writes an encrypted snapshot of the whole data root;
+  `python -m app.ops restore FILE` puts it back (see docs/operations.md).
 
 JSON updates are a bounded read-modify-write under a per-campaign lock, written to a temp file, fsynced, then
-`os.replace`d. That is O(n) I/O and memory per write, fine for 20-100 people. Past that, migrate to JSONL/SQLite with a
-`schema_version` bump.
+`os.replace`d. That is O(n) I/O and memory per write. The load test covers 3 concurrent campaigns of 100 people
+each. SQLite and JSON schema changes go through explicit migrations that back up the file first
+(`app/migrations.py`).
 
 ## Pipeline
 
@@ -95,14 +107,16 @@ intake → discovery → candidate review → research → evidence review → o
 
 ## Stop, restart, resume
 
-**Stop** halts queued work for a campaign; finished profiles are already on disk. If the process dies, on restart
-running jobs become `interrupted` and "researching" candidates go back to `selected`. **Resume** re-queues only
+**Stop** halts queued work for a campaign; finished profiles are already on disk. On SIGTERM or Ctrl+C, running
+jobs get `SHUTDOWN_GRACE_SECONDS` to finish, then the rest are checkpointed as `interrupted`, and the model, fetch,
+and Gmail clients are closed. If the process dies instead, on restart running jobs become `interrupted` and
+"researching" candidates go back to `selected`. **Resume** re-queues only
 unfinished work: people with a fresh profile and drafts with unchanged inputs are skipped, and Gmail drafts are never
 recreated.
 
 ## What is still missing
 
-HERMES currently completes one safe local workflow: create a campaign, discover and research people, draft messages,
+HERMES currently completes one safe workflow, locally or on a self-hosted server: create a campaign, discover and research people, draft messages,
 review them, and create Gmail drafts. It is not yet the complete email-automation system described by the long-term
 vision. The main missing capabilities are:
 
@@ -110,7 +124,7 @@ vision. The main missing capabilities are:
 
 - A global contact ledger across campaigns, including prior outreach, notes, tags, relationship state, and a durable
   "do not contact again" flag. Deduplication today is primarily within one campaign.
-- Campaign search, rename, archive, duplicate, and delete controls.
+- Campaign search, rename, archive, and duplicate controls. Delete exists, for whole campaigns and single people.
 - CSV import/export and a way to merge hand-curated contacts with discovered candidates.
 - Reusable sender identities for Nitu's personal outreach and each Rutgers organization, with distinct signatures,
   biographies, links, and default asks.
@@ -147,9 +161,14 @@ vision. The main missing capabilities are:
 - A dashboard for campaign throughput, research success, verified-contact rate, draft approval rate, replies, and
   outcomes. Current metrics focus on API usage, cache hits, and job progress.
 - Notifications for completed research, failed jobs, drafts ready for review, and follow-ups due.
-- Dependency locking, automated CI, browser-level UI coverage, migration tooling, structured operational logs, backup,
-  and restore procedures.
-- Multi-user authentication and remote deployment. The current security model is intentionally single-user and local.
+- Automatic resume after a restart. Interrupted jobs are checkpointed and resume cleanly, but only when you press
+  Resume, so budget use stays under your control.
+- Remote mode runs as a single process with password login only. It has no MFA, SSO, self-service password reset,
+  roles, per-user monthly spend quotas, or automated `HERMES_SECRET_KEY` rotation. Login throttling is kept in
+  memory.
+- Deleting data in HERMES does not delete Gmail drafts it already created, and it does not remove the data from
+  earlier backups.
+- The data-root lock uses `fcntl`, so it runs on macOS and Linux only; Windows is not supported.
 
 The next highest-value milestone is **contact memory + reply-aware follow-ups**. Together, those turn HERMES from a
 campaign drafting tool into a system that can manage ongoing relationships without repeatedly researching or messaging
@@ -221,5 +240,10 @@ flowchart TD
     SERVICE --> MAIL
 ```
 
-Security: API bound to 127.0.0.1, Host header checked, every `/api` route requires the token from the startup link.
-Web page text is treated as untrusted data and all UI rendering escapes it.
+Security (local mode): API bound to 127.0.0.1 (startup refuses anything else), Host header checked, every `/api`
+route requires the token from the startup link. Remote mode never accepts that token. It requires HTTPS, password
+login, a Secure/HttpOnly/SameSite=Strict session cookie, and a CSRF token on every change. Each user gets an
+isolated data root, and provider credentials are stored encrypted. The threat model is in
+[docs/remote-deployment.md](docs/remote-deployment.md). In both modes, web page text is treated as untrusted data,
+all UI rendering escapes it, a strict CSP is sent, and logs are structured JSON with secrets and personal data
+redacted.
