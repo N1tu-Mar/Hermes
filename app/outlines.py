@@ -3,6 +3,7 @@
 Edit TEMPLATES to change structure/tone per audience. Bump a template's
 version when you change it: that invalidates earlier approvals.
 """
+
 import re
 
 TEMPLATES = {
@@ -10,8 +11,12 @@ TEMPLATES = {
         "version": "research_professor.v1",
         "audience": "professor",
         "greeting": "Dear Professor {last_name},",
-        "sections": ["who the sender is", "the professor's specific relevant work",
-                     "why the match makes sense", "short ask about undergraduate research opportunities"],
+        "sections": [
+            "who the sender is",
+            "the professor's specific relevant work",
+            "why the match makes sense",
+            "short ask about undergraduate research opportunities",
+        ],
         "default_ask": "whether you might have room for an undergraduate researcher in your group",
         "signoff": "Best regards,",
         "tone": "respectful, concise, curious; no flattery",
@@ -21,8 +26,12 @@ TEMPLATES = {
         "version": "startup.v1",
         "audience": "startup founder or team member",
         "greeting": "Hi {first_name},",
-        "sections": ["one-line intro of sender", "specific thing about their product/work",
-                     "why sender is reaching out", "small, concrete ask"],
+        "sections": [
+            "one-line intro of sender",
+            "specific thing about their product/work",
+            "why sender is reaching out",
+            "small, concrete ask",
+        ],
         "default_ask": "a 15-minute chat",
         "signoff": "Thanks,",
         "tone": "direct, warm, brief",
@@ -32,8 +41,12 @@ TEMPLATES = {
         "version": "speaker_invite.v1",
         "audience": "potential speaker or mentor",
         "greeting": "Hi {first_name},",
-        "sections": ["the Rutgers organization and sender's role", "specific reason for inviting this person",
-                     "proposed format/timing if supplied", "clear reply request"],
+        "sections": [
+            "the Rutgers organization and sender's role",
+            "specific reason for inviting this person",
+            "proposed format/timing if supplied",
+            "clear reply request",
+        ],
         "default_ask": "whether you would be open to speaking with our members",
         "signoff": "Best,",
         "tone": "enthusiastic but professional, specific",
@@ -43,8 +56,11 @@ TEMPLATES = {
         "version": "rsvp_followup.v1",
         "audience": "previously invited speaker",
         "greeting": "Hi {first_name},",
-        "sections": ["reference the earlier invitation (date recorded by the app)",
-                     "brief restatement of the event", "simple yes/no RSVP request"],
+        "sections": [
+            "reference the earlier invitation (date recorded by the app)",
+            "brief restatement of the event",
+            "simple yes/no RSVP request",
+        ],
         "default_ask": "a quick yes/no on whether you can join",
         "signoff": "Best,",
         "tone": "short, polite, no pressure",

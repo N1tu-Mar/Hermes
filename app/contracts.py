@@ -3,6 +3,7 @@
 Validation returns a list of problems instead of raising so one malformed
 record gets flagged without crashing the whole run.
 """
+
 import re
 from urllib.parse import urlsplit, urlunsplit
 
@@ -18,8 +19,13 @@ INTAKE_FIELDS = (
 LIST_FIELDS = {"organizations", "locations", "research_areas", "industries", "source_urls"}
 
 CANDIDATE_STATES = {
-    "discovered", "selected", "researching", "researched",
-    "excluded", "needs_contact_review", "research_failed",
+    "discovered",
+    "selected",
+    "researching",
+    "researched",
+    "excluded",
+    "needs_contact_review",
+    "research_failed",
 }
 DRAFT_STATES = {"generated", "needs_review", "approved", "gmail_draft_created", "blocked"}
 
@@ -90,7 +96,9 @@ def profile_problems(pr):
     if not pr.get("candidate_id"):
         p.append("missing candidate_id")
     for e in pr.get("evidence") or []:
-        if not (isinstance(e, dict) and e.get("claim") and normalize_url(e.get("source_url")) and e.get("retrieved_at")):
+        if not (
+            isinstance(e, dict) and e.get("claim") and normalize_url(e.get("source_url")) and e.get("retrieved_at")
+        ):
             p.append(f"unsourced evidence {e!r:.80}")
         if e.get("provenance") == "manual_correction" and e.get("web_verified"):
             p.append("manual evidence mislabeled as web verified")

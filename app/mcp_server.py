@@ -4,6 +4,7 @@ It never opens campaign files; the app process remains the only writer and
 enforces the same stage/approval rules as the UI.
 Run: python -m app.mcp_server   (with the app already running)
 """
+
 import os
 from pathlib import Path
 

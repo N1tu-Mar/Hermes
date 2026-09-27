@@ -11,11 +11,14 @@ stores reusable messaging assets, analytics, corrections, and policy rules.
 Outreach tracking adds Gmail thread metadata, idempotent follow-up steps, and
 an audit log without reading or storing message bodies.
 """
+
 import json
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 
+from .migrations import migrate_sqlite
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS pages (
   url TEXT PRIMARY KEY, fetched_at REAL, ok INTEGER, text TEXT, error TEXT);
@@ -171,7 +174,9 @@ class Cache:
         self.db = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
-        migrate(self.db)
+        self.db.execute("PRAGMA secure_delete=ON")
+        self.path = path
+        migrate_sqlite(self.db, path, MIGRATIONS)
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(usage)")}
         for name in ("pages_fetched", "bytes_fetched", "pages_skipped"):
             if name not in cols:
@@ -189,6 +194,24 @@ class Cache:
                            WHERE api_calls+cache_hits+input_tokens+output_tokens>0
                            AND campaign_id NOT IN (SELECT campaign_id FROM usage_log)""")
         self.lock = threading.Lock()
+
+    @contextmanager
+    def tx(self):
+        with self.lock:
+            self.db.execute("BEGIN")
+            try:
+                yield
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+            self.db.execute("COMMIT")
+
+    def close(self):
+        with self.lock:
+            self.db.close()
+
+    def ping(self):
+        return self.q("SELECT 1 AS ok")[0]["ok"] == 1
 
     def q(self, sql, args=()):
         with self.lock:
@@ -218,8 +241,7 @@ class Cache:
         return r if time.time() - r["fetched_at"] < ttl else None
 
     def put_page(self, url, text=None, error=None):
-        self.x("INSERT OR REPLACE INTO pages VALUES (?,?,?,?,?)",
-               (url, time.time(), int(error is None), text, error))
+        self.x("INSERT OR REPLACE INTO pages VALUES (?,?,?,?,?)", (url, time.time(), int(error is None), text, error))
 
     # research ----------------------------------------------------------
     def get_research(self, key):
@@ -253,11 +275,15 @@ class Cache:
             if k in fields and not isinstance(fields[k], str):
                 fields[k] = json.dumps(fields[k])
         with self.lock:
-            self.db.execute("INSERT OR IGNORE INTO drafts (campaign_id, candidate_id, template_version) VALUES (?,?,?)",
-                            (campaign_id, candidate_id, template_version))
+            self.db.execute(
+                "INSERT OR IGNORE INTO drafts (campaign_id, candidate_id, template_version) VALUES (?,?,?)",
+                (campaign_id, candidate_id, template_version),
+            )
             sets = ", ".join(f"{k}=?" for k in fields)
-            self.db.execute(f"UPDATE drafts SET {sets} WHERE campaign_id=? AND candidate_id=? AND template_version=?",
-                            (*fields.values(), campaign_id, candidate_id, template_version))
+            self.db.execute(
+                f"UPDATE drafts SET {sets} WHERE campaign_id=? AND candidate_id=? AND template_version=?",  # noqa: S608 keys are code-defined
+                (*fields.values(), campaign_id, candidate_id, template_version),
+            )
 
     # jobs --------------------------------------------------------------
     def put_job(self, job_id, campaign_id, kind, candidate_id, status, error=None):
@@ -271,9 +297,11 @@ class Cache:
     def jobs(self, campaign_id=None, status=None):
         sql, args = "SELECT * FROM jobs WHERE 1=1", []
         if campaign_id:
-            sql += " AND campaign_id=?"; args.append(campaign_id)
+            sql += " AND campaign_id=?"
+            args.append(campaign_id)
         if status:
-            sql += " AND status=?"; args.append(status)
+            sql += " AND status=?"
+            args.append(status)
         return self.q(sql + " ORDER BY created_at", args)
 
     def mark_interrupted(self):
@@ -298,11 +326,90 @@ class Cache:
         self.usage(campaign_id)
         self.x("UPDATE usage SET budget=? WHERE campaign_id=?", (int(budget), campaign_id))
 
+    # deletion / retention ----------------------------------------------
+    def delete_campaign(self, campaign_id):
+        with self.tx():
+            execution_ids = [r[0] for r in self.db.execute(
+                "SELECT execution_id FROM rule_executions WHERE campaign_id=?", (campaign_id,)
+            )]
+            for execution_id in execution_ids:
+                self.db.execute("DELETE FROM rule_actions WHERE execution_id=?", (execution_id,))
+            send_ids = [r[0] for r in self.db.execute("SELECT send_id FROM sends WHERE campaign_id=?", (campaign_id,))]
+            # send_audit is append-only during normal operation; explicit data deletion is the sole exception.
+            self.db.execute("DROP TRIGGER IF EXISTS audit_no_delete")
+            for send_id in send_ids:
+                self.db.execute("DELETE FROM send_audit WHERE send_id=?", (send_id,))
+            self.db.execute("""CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON send_audit
+                               BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END""")
+            for table in ("drafts", "jobs", "usage", "events", "corrections", "person_links", "contact_links",
+                          "person_reviews", "milestones", "usage_log", "notifications", "outreach_contacts",
+                          "followups", "gmail_seen", "contact_log", "campaign_assets", "campaign_rules",
+                          "rule_executions", "campaign_meta", "sends"):
+                self.db.execute(f"DELETE FROM {table} WHERE campaign_id=?", (campaign_id,))  # noqa: S608 fixed names
+            self.db.execute("DELETE FROM research_cache WHERE key LIKE ?", (campaign_id + ":%",))
+
+    def delete_candidate(self, campaign_id, candidate_id, name=None, urls=()):
+        """Remove every row derived from one person. Events are free text, so match their id or name."""
+        with self.tx():
+            send_ids = [r[0] for r in self.db.execute(
+                "SELECT send_id FROM sends WHERE campaign_id=? AND candidate_id=?", (campaign_id, candidate_id)
+            )]
+            self.db.execute("DROP TRIGGER IF EXISTS audit_no_delete")
+            for send_id in send_ids:
+                self.db.execute("DELETE FROM send_audit WHERE send_id=?", (send_id,))
+            self.db.execute("""CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON send_audit
+                               BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END""")
+            for table in ("drafts", "jobs"):
+                self.db.execute(
+                    f"DELETE FROM {table} WHERE campaign_id=? AND candidate_id LIKE ?",  # noqa: S608
+                    (campaign_id, candidate_id + "%"),
+                )
+            for table in ("corrections", "person_links", "contact_links", "person_reviews", "milestones",
+                          "notifications", "outreach_contacts", "followups", "gmail_seen", "contact_log", "sends"):
+                self.db.execute(
+                    f"DELETE FROM {table} WHERE campaign_id=? AND candidate_id=?",  # noqa: S608 fixed names
+                    (campaign_id, candidate_id),
+                )
+            self.db.execute(
+                "DELETE FROM interactions WHERE campaign_id=? AND candidate_id=?", (campaign_id, candidate_id)
+            )
+            self.db.execute(
+                "DELETE FROM rule_actions WHERE candidate_id=? AND execution_id IN "
+                "(SELECT execution_id FROM rule_executions WHERE campaign_id=?)", (candidate_id, campaign_id)
+            )
+            self.db.execute("DELETE FROM research_cache WHERE key LIKE ?", (f"{campaign_id}:{candidate_id}:%",))
+            self.db.execute(
+                "DELETE FROM events WHERE campaign_id=? AND (message LIKE ? OR message LIKE ?)",
+                (campaign_id, f"{candidate_id}:%", f"{name or candidate_id}:%"),
+            )
+            for url in urls:
+                self.db.execute("DELETE FROM pages WHERE url=?", (url,))
+
+    def purge(self, older_than_days):
+        """Retention: drop expired caches, and events/finished jobs older than the window. Returns row counts."""
+        now, cutoff = time.time(), time.time() - older_than_days * 86400
+        stmts = {
+            "pages": ("DELETE FROM pages WHERE fetched_at < ?", now - PAGE_TTL),
+            "research_cache": ("DELETE FROM research_cache WHERE created_at < ?", now - RESEARCH_TTL),
+            "events": ("DELETE FROM events WHERE at < ?", cutoff),
+            "jobs": (
+                "DELETE FROM jobs WHERE updated_at < ? AND status NOT IN ('queued','running','interrupted')",
+                cutoff,
+            ),
+        }
+        out = {}
+        with self.tx():
+            for name, (sql, arg) in stmts.items():
+                out[name] = self.db.execute(sql, (arg,)).rowcount
+        return out
+
     def event(self, campaign_id, message):
         self.x("INSERT INTO events (campaign_id, at, message) VALUES (?,?,?)", (campaign_id, time.time(), message))
 
     def events(self, campaign_id, limit=15):
-        return self.q("SELECT at, message FROM events WHERE campaign_id=? ORDER BY id DESC LIMIT ?", (campaign_id, limit))
+        return self.q(
+            "SELECT at, message FROM events WHERE campaign_id=? ORDER BY id DESC LIMIT ?", (campaign_id, limit)
+        )
 
     # corrections ------------------------------------------------------
     def record_correction(self, subject_key, aliases, campaign_id, candidate_id, field,

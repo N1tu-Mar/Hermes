@@ -14,7 +14,7 @@ from app.campaigns import CampaignService
 from app.gmail import GmailAuthError, GmailDrafts, _run
 from app.outlines import OutlineBlocked, build_followup_outline
 from app.storage import CampaignStore
-from test_core import BIO, idle, make_campaign, wait
+from tests.support import BIO, idle, make_campaign, wait
 
 DAY = 86400
 
@@ -213,7 +213,9 @@ def test_crash_mid_generation_reuses_same_step_and_caps_attempts(tmp_path):
         box.send(next(iter(box.draft_store)))
         sync(client, cid)
     # Simulate a crash while step 0 was generating, twice (max_attempts=2).
+    svc.cache = Cache(tmp_path / "data" / "cache.sqlite3")
     svc.cache.x("UPDATE followups SET status='generating', attempts=2 WHERE campaign_id=?", (cid,))
+    svc.cache.close()
     svc2, client2 = build(tmp_path, box, now=lambda: time.time() + 8 * DAY)
     with client2:
         assert sync(client2, cid)["followups_queued"] == 0

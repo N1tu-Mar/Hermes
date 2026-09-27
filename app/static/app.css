@@ -277,3 +277,9 @@ dialog::backdrop { background: #1b243399; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+.account { position: relative; font-size: 13px; }
+.account summary { cursor: pointer; }
+.account-panel { position: absolute; right: 0; top: 28px; z-index: 5; width: min(320px, calc(100vw - 32px)); padding: 12px;
+  background: var(--sheet); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; display: grid; gap: 10px; }
+.login { max-width: 360px; }

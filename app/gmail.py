@@ -19,7 +19,9 @@ land?" without any inbox read scope. `can_send` is True only when the token
 was explicitly granted gmail.send (python -m app.gmail --enable-sending).
 gmail.compose alone technically permits sending, so the app gates on this.
 """
+
 import base64
+import json
 import os
 from email.message import EmailMessage
 from pathlib import Path
@@ -102,6 +104,7 @@ class GmailDrafts:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
+
         cred_path, token_path = credentials_paths()
         creds = None
         if token_path.exists():
@@ -124,6 +127,19 @@ class GmailDrafts:
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json())
         os.chmod(token_path, 0o600)
+        return cls(build("gmail", "v1", credentials=creds, cache_discovery=False),
+                   can_sync=creds.has_scopes([METADATA]), can_send=creds.has_scopes([SEND_SCOPE]))
+
+    @classmethod
+    def from_token_json(cls, text):
+        """Remote mode: build from a user's stored (decrypted) OAuth token instead of a token file."""
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
+        creds = Credentials.from_authorized_user_info(json.loads(text), SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
         return cls(build("gmail", "v1", credentials=creds, cache_discovery=False),
                    can_sync=creds.has_scopes([METADATA]), can_send=creds.has_scopes([SEND_SCOPE]))
 
@@ -174,6 +190,13 @@ class GmailDrafts:
         return [{"id": m["id"], "labels": m.get("labelIds") or [], "at": int(m.get("internalDate") or 0) / 1000,
                  "headers": {h["name"].lower(): h["value"] for h in (m.get("payload") or {}).get("headers", [])}}
                 for m in res.get("messages", [])]
+
+
+def web_flow(redirect_uri):
+    """Remote mode OAuth (web application client). The desktop flow above only works on the local machine."""
+    from google_auth_oauthlib.flow import Flow
+
+    return Flow.from_client_secrets_file(str(credentials_paths()[0]), SCOPES, redirect_uri=redirect_uri)
 
 
 if __name__ == "__main__":

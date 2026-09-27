@@ -3,7 +3,8 @@
 **HERMES — Human-reviewed Email Research, Messaging, and Engagement System** — is Nitu's personal command center
 for research, outreach, and eventually much broader email automation. It finds professors, startup people, speakers,
 and mentors; researches them from public sources; drafts genuinely personalized messages; and puts approved messages
-into Gmail **Drafts**. The current MVP never sends mail.
+into Gmail **Drafts**. Sending is available only after a separate OAuth grant, a global opt-in, a campaign opt-in, and
+human confirmation of the exact message; draft-only mode remains the default.
 
 ## Why HERMES?
 
@@ -16,16 +17,23 @@ keeping consequential actions visible and under human control.
 The design principle is **high-volume capability without low-quality outreach**. HERMES automates repetitive research,
 organization, personalization, and drafting, but requires review before an email enters Gmail.
 
-One Python process (FastAPI + asyncio workers + SQLite), plain HTML/CSS/JS UI, optional stdio MCP adapter.
+One Python process (FastAPI + asyncio workers + SQLite), plain HTML/CSS/JS UI, optional stdio MCP adapter. Local
+single-user mode is the default and needs no account setup. An optional remote mode adds logins and per-user data
+isolation behind HTTPS (see [docs/remote-deployment.md](docs/remote-deployment.md)).
 
 ## Run
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3.13 -m venv .venv
+.venv/bin/pip install --require-hashes --no-deps -r requirements-dev.lock   # pinned, hash-checked
+.venv/bin/python -m playwright install chromium   # only needed for the browser test
 cp .env.example .env            # leave OPENAI_API_KEY empty for demo mode
-.venv/bin/python -m app.api     # prints http://127.0.0.1:8765/?t=<token>; open that exact link
-.venv/bin/python -m pytest -q   # tests
+.venv/bin/python -m app.api     # validates config, prints http://127.0.0.1:8765/?t=<token>; open that exact link
+.venv/bin/python -m pytest -q   # full suite (unit, workflow, remote isolation, load, browser)
 ```
+
+Operating the app (checks, logs, health endpoints, migrations and rollback, encrypted backup and restore, deletion
+and retention, shutdown behavior) is covered in [docs/operations.md](docs/operations.md).
 
 **Demo mode** (no `OPENAI_API_KEY`): discovery/research/writing use fictional fixture people labeled "(demo)", with
 pages served locally at `/demo/pages/...` so source links open. One person per list has an unreachable page and one
@@ -37,14 +45,16 @@ use the Responses API with the `web_search` tool plus structured outputs; pages 
 ## Connect Gmail (optional)
 
 1. Google Cloud console: create a project, enable the **Gmail API**.
-2. OAuth consent screen: External, add yourself as a test user. Scope: `https://www.googleapis.com/auth/gmail.compose` only.
+2. OAuth consent screen: External, add yourself as a test user. HERMES requests `gmail.compose` and
+   `gmail.metadata`; run the OAuth helper with `--enable-sending` only if you also want to grant `gmail.send`.
 3. Credentials: create an **OAuth client ID** of type **Desktop app**, download the JSON to
    `~/.config/outreach/credentials.json` (outside the repo; path configurable via `GMAIL_CREDENTIALS`).
 4. `.venv/bin/python -m app.gmail` once; a browser window completes consent and saves `~/.config/outreach/token.json` (0600).
 5. Restart the app. Without Gmail, approved drafts can still be previewed and exported as text.
 
-`gmail.compose` creates/reads drafts; no inbox read scope is requested. Each Gmail draft carries an `X-Outreach-Key`
-header; if a create call times out, the retry first scans recent drafts for that key instead of creating a duplicate.
+`gmail.compose` creates/reads drafts and `gmail.metadata` checks only HERMES-recorded thread IDs for replies and
+bounces; message bodies are not read. Each Gmail draft carries an `X-Outreach-Key` header; if a create call times out,
+the retry first scans recent drafts for that key instead of creating a duplicate.
 
 ## MCP
 
@@ -76,10 +86,15 @@ same approval rules apply: Gmail drafts are only created for drafts a human appr
   SHA-256 are stored in SQLite. `data/` is Git-ignored; set `DATA_ROOT=/an/absolute/local/path` to put all runtime data
   elsewhere. Never add that directory to version control.
 - Secrets: `.env` (git-ignored) and `~/.config/outreach/`. Nothing secret goes in campaign files or the browser.
+- Remote mode: `data/auth.sqlite3` (accounts, hashed sessions, encrypted provider credentials) and one full data root
+  per user under `data/users/<id>/`.
+- Backups: `python -m app.ops backup FILE` writes an encrypted snapshot of the whole data root;
+  `python -m app.ops restore FILE` puts it back (see docs/operations.md).
 
 JSON updates are a bounded read-modify-write under a per-campaign lock, written to a temp file, fsynced, then
-`os.replace`d. That is O(n) I/O and memory per write, fine for 20-100 people. Past that, migrate to JSONL/SQLite with a
-`schema_version` bump.
+`os.replace`d. That is O(n) I/O and memory per write. The load test covers 3 concurrent campaigns of 100 people
+each. SQLite and JSON schema changes go through explicit migrations that back up the file first
+(`app/migrations.py`).
 
 ## Pipeline
 
@@ -156,7 +171,7 @@ An outcome needs a recorded send first ("I sent this message/invitation").
   JSON: `GET /api/analytics` with the same filters.
 
 **Unknown vs zero.** Unknown is `null` in JSON, an empty CSV cell, and *unknown* in the UI; 0 means none recorded.
-Unknown cases: "scheduled" (HERMES has no scheduled sending), a rate with an empty denominator, cost unless
+Unknown cases include a rate with an empty denominator and cost unless
 `HERMES_PRICE_INPUT_PER_MTOK` and `HERMES_PRICE_OUTPUT_PER_MTOK` (USD per million tokens) are set (web-search call fees
 are not included), usage split by organization/template/sender (usage is only known per campaign), a sender identity
 unless the campaign's reusable content/attachments all belong to one identity, and usage recorded before analytics
@@ -181,38 +196,39 @@ sends mail, so an email channel would need its own credentials and a separate de
 
 ## Stop, restart, resume
 
-**Stop** halts queued work for a campaign; finished profiles are already on disk. If the process dies, on restart
-running jobs become `interrupted` and "researching" candidates go back to `selected`. **Resume** re-queues only
+**Stop** halts queued work for a campaign; finished profiles are already on disk. On SIGTERM or Ctrl+C, running
+jobs get `SHUTDOWN_GRACE_SECONDS` to finish, then the rest are checkpointed as `interrupted`, and the model, fetch,
+and Gmail clients are closed. If the process dies instead, on restart running jobs become `interrupted` and
+"researching" candidates go back to `selected`. **Resume** re-queues only
 unfinished work: people with a fresh profile and drafts with unchanged inputs are skipped, and Gmail drafts are never
 recreated.
 
 ## What is still missing
 
-HERMES currently completes one safe local workflow: create a campaign, discover and research people, draft messages,
+HERMES currently completes one safe workflow, locally or on a self-hosted server: create a campaign, discover and research people, draft messages,
 review them, and create Gmail drafts. It is not yet the complete email-automation system described by the long-term
 vision. The main missing capabilities are:
 
 ### Contact and campaign management
 
-- Rich contact merging, notes/tags, and relationship management beyond the current policy/contact record.
-- Campaign search, rename, archive, duplicate, and delete controls.
-- CSV import/export and a way to merge hand-curated contacts with discovered candidates.
+- A dedicated manual merge flow for ambiguous contact matches. HERMES flags them for review but does not silently
+  combine records.
+- Shared contact ownership, permissions, and collaboration across accounts. Remote-mode users are intentionally
+  isolated today.
 
 ### Follow-ups and inbox awareness
 
-- Scheduled multi-step follow-up sequences. Current RSVP and general follow-ups require a human-recorded prior send;
-  no-reply rules prepare drafts but do not infer sends or replies.
-- Scheduled reminders, quiet hours, rate limits, and a review queue for follow-ups that are due.
-- Gmail thread and reply synchronization so a sequence can stop when someone responds. This requires additional OAuth
-  scope and a deliberate privacy review; the current `gmail.compose` scope does not read the inbox.
-- Automatic outcome detection. Outcomes are recorded by hand today (see Analytics and notifications).
+- A visual sequence builder with per-campaign timing and templates. The current sequences are code-defined.
+- Provider-independent reply synchronization. Gmail metadata sync is implemented; Outlook and generic IMAP are not.
+- Richer automatic outcome classification beyond replies and bounces; interested, declined, and meeting outcomes still
+  require a human decision.
 
 ### Deeper automation
 
-- Optional, explicitly approved sending or scheduled sending. HERMES currently creates drafts only.
 - Calendar integration for proposing times, creating events, and attaching event details after a recipient agrees.
-- Scheduled/rate-limited rule execution and richer multi-step sequences. Current bulk rules are deliberately explicit:
-  save, dry-run, then apply, with every resulting draft still requiring individual human approval.
+- Scheduled rule execution. Current bulk rules are deliberately explicit: save, dry-run, then apply, with every
+  resulting draft still requiring individual human approval.
+- Deliverability controls beyond quiet hours, spacing, hourly/daily limits, and bounce/reply handling.
 
 ### Better discovery and research
 
@@ -222,14 +238,19 @@ vision. The main missing capabilities are:
 
 ### Analytics and operations
 
-- Email/push notification channels and scheduled-send failure alerts (no scheduler exists yet).
-- Dependency locking, automated CI, browser-level UI coverage, migration tooling, structured operational logs, backup,
-  and restore procedures.
-- Multi-user authentication and remote deployment. The current security model is intentionally single-user and local.
+- Automatic resume after a restart. Interrupted jobs are checkpointed and resume cleanly, but only when you press
+  Resume, so budget use stays under your control.
+- Remote mode runs as a single process with password login only. It has no MFA, SSO, self-service password reset,
+  roles, per-user monthly spend quotas, or automated `HERMES_SECRET_KEY` rotation. Login throttling is kept in
+  memory.
+- Deleting data in HERMES does not delete Gmail drafts it already created, and it does not remove the data from
+  earlier backups.
+- The data-root lock uses `fcntl`, so it runs on macOS and Linux only; Windows is not supported.
+- Managed email/push notification channels and centralized monitoring; the current notification center is in-app,
+  with optional desktop alerts.
 
-The next highest-value milestone is **contact memory + reply-aware follow-ups**. Together, those turn HERMES from a
-campaign drafting tool into a system that can manage ongoing relationships without repeatedly researching or messaging
-the same person.
+The next highest-value milestone is a **visual sequence builder plus calendar/provider integrations**. That would turn
+the current Gmail-centered, code-configured automation into a workflow that can be adapted without editing code.
 
 ## Architecture
 
@@ -297,5 +318,10 @@ flowchart TD
     SERVICE --> MAIL
 ```
 
-Security: API bound to 127.0.0.1, Host header checked, every `/api` route requires the token from the startup link.
-Web page text is treated as untrusted data and all UI rendering escapes it.
+Security (local mode): API bound to 127.0.0.1 (startup refuses anything else), Host header checked, every `/api`
+route requires the token from the startup link. Remote mode never accepts that token. It requires HTTPS, password
+login, a Secure/HttpOnly/SameSite=Strict session cookie, and a CSRF token on every change. Each user gets an
+isolated data root, and provider credentials are stored encrypted. The threat model is in
+[docs/remote-deployment.md](docs/remote-deployment.md). In both modes, web page text is treated as untrusted data,
+all UI rendering escapes it, a strict CSP is sent, and logs are structured JSON with secrets and personal data
+redacted.

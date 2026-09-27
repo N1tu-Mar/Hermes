@@ -4,3 +4,9 @@ data/
 __pycache__/
 .venv/
 .pytest_cache/
+.ruff_cache/
+*.hbk
+/data.pre-restore-*/
+/.data.restore-*/
+/data.pre-restore-*/
+/.data.restore-*/

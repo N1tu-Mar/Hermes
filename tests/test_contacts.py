@@ -13,7 +13,7 @@ from app.campaigns import CampaignService
 from app.gmail import GmailDrafts
 from app.ledger import Ledger, canonical_url, name_key
 from app.storage import CampaignStore
-from test_core import BIO, FakeGmailService, idle, make_campaign, wait
+from tests.support import BIO, FakeGmailService, idle, make_campaign, wait
 
 TEXT = "Rutgers/Princeton professors working on computational neurodevelopment who may work with undergraduates"
 MIXED_CSV = """Name,Organization,Email,Profile URL,Tags,Notes,Do Not Contact

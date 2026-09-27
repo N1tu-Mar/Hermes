@@ -24,6 +24,19 @@
   <label class="switcher">Campaign
     <select id="campaign-select"><option value="">New campaign</option></select>
   </label>
+  <details id="account" class="account" hidden>
+    <summary id="account-name"></summary>
+    <div class="account-panel">
+      <p id="account-state" class="note"></p>
+      <form id="openai-form"><label>OpenAI API key <small>stored encrypted; leave empty for demo data</small>
+        <input name="api_key" type="password" autocomplete="off"></label>
+        <button type="submit" class="small">Save key</button>
+        <button type="button" class="small ghost" id="btn-clear-key">Remove key</button></form>
+      <p><a class="button small" href="/auth/gmail/start">Connect Gmail</a>
+        <button type="button" class="small ghost" id="btn-disconnect-gmail">Disconnect Gmail</button></p>
+      <button type="button" class="small" id="btn-logout">Log out</button>
+    </div>
+  </details>
 </header>
 <aside id="notif-panel" class="notif-panel" aria-label="Notifications" hidden>
   <div class="notif-head"><b>Notifications</b>
@@ -36,6 +49,16 @@
   <p id="token-warning" class="banner warn" hidden>
     This page needs the app link printed in the terminal (it ends with <code>?t=…</code>). Open that link to continue.
   </p>
+
+  <!-- 0. Login (remote mode only) -->
+  <section id="view-login" class="view" hidden>
+    <h1 class="thesis">Sign in to HERMES</h1>
+    <form id="login-form" class="fields login">
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">Sign in</button>
+    </form>
+  </section>
 
   <!-- 1. Landing -->
   <section id="view-home" class="view">
@@ -124,6 +147,7 @@
         <button id="btn-stop" class="ghost">Stop</button>
         <button id="btn-resume" class="ghost">Resume</button>
         <button id="btn-edit-intake" class="ghost">Edit ask &amp; background</button>
+        <button id="btn-delete-campaign" class="ghost">Delete campaign</button>
       </div>
     </div>
 
