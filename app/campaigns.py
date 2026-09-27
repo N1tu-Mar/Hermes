@@ -21,6 +21,7 @@ from .gmail import GmailAuthError
 from .jobs import Coordinator
 from .ledger import MANUAL_INTERACTIONS, Ledger, clean_tags
 from .openai_client import BudgetExceeded, ModelError
+from .sending import Outbox, payload_hash
 
 
 class Rejected(Exception):
@@ -100,15 +101,19 @@ def essential_missing(intake):
 
 
 class CampaignService:
-    def __init__(self, store, cache, model, fetcher, gmail=None, workspace=None):
+    def __init__(self, store, cache, model, fetcher, gmail=None, workspace=None,
+                 clock=time.time, send_every=15):
         self.store, self.cache, self.model, self.fetcher, self.gmail = store, cache, model, fetcher, gmail
         self.workspace = workspace
         self.ledger = Ledger(cache)
-        self.now = time.time  # injectable clock for follow-up scheduling
+        self.now = clock  # injectable clock for follow-up scheduling and sending
         self.outreach = Outreach(self)
         self.jobs = Coordinator(cache, {"discover": self._do_discover, "research": self._do_research,
                                         "write": self._do_write, "followup": self.outreach.generate})
         self.jobs.on_finish = self._job_finished
+        self.outbox = Outbox(cache, gmail, clock)
+        self.outbox.revalidate = self._send_still_valid
+        self.send_every = send_every  # None lets tests drive the scheduler explicitly
 
     async def parse_intake(self, text, mode=None, subtype=None):
         """Model-assisted extraction with deterministic validation and fallback."""
@@ -153,10 +158,21 @@ class CampaignService:
                 logging.exception("startup repair failed for %s", cid)
         analytics.backfill(self)
         self.outreach.reset_interrupted()
+        self.outbox.recover()
         self.jobs.start()
         minutes = float(os.environ.get("GMAIL_SYNC_MINUTES", 15))
         if minutes > 0:
             self.jobs.tasks.append(asyncio.create_task(self._sync_loop(minutes)))  # cancelled with the workers
+        if self.send_every:
+            self.jobs.tasks.append(asyncio.create_task(self._send_loop()))  # cancelled with the workers on shutdown
+
+    async def _send_loop(self):
+        while True:
+            await asyncio.sleep(self.send_every)
+            try:
+                await asyncio.to_thread(self.outbox.tick)
+            except Exception:
+                logging.getLogger("sending").exception("scheduler tick failed")
 
     async def _sync_loop(self, minutes):
         while True:
@@ -768,8 +784,8 @@ class CampaignService:
             return
         h = writer.input_hash(outline)
         old = self.cache.get_draft(campaign_id, cand_id, version)
-        if old and old["status"] == "gmail_draft_created":
-            return  # never regenerate over an existing Gmail draft
+        if old and old["status"] == "gmail_draft_created" or self.outbox.locked(campaign_id, cand_id, version):
+            return  # never regenerate over an existing Gmail draft or a sent/in-flight message
         if old and old.get("input_hash") == h and old["status"] in ("needs_review", "approved"):
             self.cache.bump_usage(campaign_id, cache_hits=1)
             return  # same inputs: keep existing draft and its approval
@@ -793,6 +809,10 @@ class CampaignService:
         d = self._draft(campaign_id, cand_id)
         if d["status"] in ("gmail_draft_created", "blocked"):
             raise Rejected(f"cannot edit a draft in state {d['status']}")
+        if self.outbox.locked(campaign_id, cand_id, d["template_version"]):
+            raise Rejected("this message was already sent or is being sent")
+        for r in self.outbox._rows("campaign_id=? AND candidate_id=? AND status='scheduled'", (campaign_id, cand_id)):
+            self.outbox._cancel(r["send_id"], "draft edited after send approval")
         sig = (d["outline"] or {}).get("signature")
         issues = writer.check_draft(subject, body.replace(sig, "") if sig else body, d["outline"], None, d["evidence_ids"])
         self.cache.upsert_draft(campaign_id, cand_id, d["template_version"], subject=subject, body=body,
@@ -1015,6 +1035,65 @@ class CampaignService:
             return {"result": f"failed ({type(e).__name__}); retry will reconcile first"}
         return {"result": "created", "gmail_draft_id": ids["draft_id"], "ids": ids}
 
+    # ---------------------------------------------------------------- sending (opt-in)
+    def _send_payload(self, campaign_id, cand_id, when=None):
+        """The exact message a human confirms. Returns (payload, recipient_verified, epoch or None)."""
+        d = self._draft(campaign_id, cand_id)
+        if d["status"] not in ("approved", "gmail_draft_created"):
+            raise Rejected(f"approve the draft first (it is {d['status']})")
+        if not self._still_current(campaign_id, d):
+            raise Rejected("evidence, template, ask, or background changed since approval; regenerate and approve again")
+        cand = next((c for c in self.store.candidates(campaign_id)["candidates"] if c["candidate_id"] == cand_id), {})
+        if cand.get("status") == "excluded":
+            raise Rejected("candidate is excluded")
+        p = self.store.research(campaign_id)["profiles"].get(cand_id) or {}
+        at = self.outbox.parse_time(when) if when else None
+        payload = {"campaign_id": campaign_id, "candidate_id": cand_id, "template_version": d["template_version"],
+                   "sender": self.outbox.sender_identity(), "recipient": p.get("contact_email"),
+                   "subject": d["subject"], "body": d["body"], "attachments": [],
+                   "scheduled_at": "now" if at is None else datetime.fromtimestamp(at, timezone.utc).isoformat()}
+        return payload, bool(p.get("email_verified_on_page")), at
+
+    def preview_send(self, campaign_id, cand_id, when=None):
+        """Confirmation screen data. Works in draft-only mode; `blockers` says why confirming would be refused."""
+        payload, verified, at = self._send_payload(campaign_id, cand_id, when)
+        blockers = self.outbox.blockers(campaign_id)
+        problem = self.outbox.recipient_problem(payload["recipient"], verified)
+        if problem:
+            blockers.append(problem)
+        at_ = at if at is not None else self.outbox.clock()
+        if self.outbox.quiet(at_):
+            blockers.append("inside quiet hours")
+        s = self.outbox.settings()
+        return {"message": payload, "approval_hash": payload_hash(payload), "blockers": blockers,
+                "scheduled_local": "now" if at is None else self.outbox.local(at), "paused": s["paused"],
+                "timezone": s["timezone"], "quiet_hours": f"{s['quiet_start']}-{s['quiet_end']}"}
+
+    def confirm_send(self, campaign_id, cand_id, approval_hash, when=None):
+        payload, verified, at = self._send_payload(campaign_id, cand_id, when)
+        row = self.outbox.approve(payload, approval_hash, verified, at)
+        self.cache.event(campaign_id, f"{cand_id}: send approved for {self.outbox.local(row['scheduled_at'])}")
+        return self.outbox.view(row)
+
+    def _send_still_valid(self, row):
+        """Called right before sending: the approved draft, its inputs, and its recipient must be unchanged."""
+        cid, cand_id = row["campaign_id"], row["candidate_id"]
+        try:
+            d = self.cache.get_draft(cid, cand_id, row["template_version"])
+            if not d or d["status"] not in ("approved", "gmail_draft_created") or (d["subject"], d["body"]) != (row["subject"], row["body"]):
+                return "draft changed or lost approval after send approval"
+            if not self._still_current(cid, d):
+                return "research, ask, or background changed after send approval"
+            p = self.store.research(cid)["profiles"].get(cand_id) or {}
+            if not p.get("email_verified_on_page") or p.get("contact_email") != row["recipient"]:
+                return "recipient changed or is no longer verified"
+            cand = next((c for c in self.store.candidates(cid)["candidates"] if c["candidate_id"] == cand_id), {})
+            if cand.get("status") == "excluded":
+                return "candidate excluded"
+        except (KeyError, RuntimeError) as e:
+            return f"campaign data unavailable ({e})"
+        return None
+
     @staticmethod
     def export_one(d, profile):
         to = (profile or {}).get("contact_email") if (profile or {}).get("email_verified_on_page") else ""
@@ -1095,6 +1174,7 @@ class CampaignService:
                 drafts[d["candidate_id"]] = d
         linked, review = self.ledger.campaign_contacts(campaign_id)
         contacts = self.outreach.contacts(campaign_id)
+        sends = {s["candidate_id"]: s["status"] for s in self.outbox.list(campaign_id)}  # ordered by time: last wins
         rows = []
         for c in cdoc["candidates"]:
             p, d = profiles.get(c["candidate_id"]) or {}, drafts.get(c["candidate_id"]) or {}
@@ -1107,12 +1187,14 @@ class CampaignService:
                          "do_not_contact": bool(k.get("do_not_contact") or o.get("do_not_contact")),
                          "relationship": k.get("relationship"), "tags": k.get("tags", []),
                          "contact_review": c["candidate_id"] in review, "outcome": o.get("outcome"),
-                         "sent_at": o.get("sent_at"), "sequence_state": o.get("sequence_state")})
+                         "sent_at": o.get("sent_at"), "sequence_state": o.get("sequence_state"),
+                         "send_status": sends.get(c["candidate_id"])})
         meta = self.ledger.campaign_meta(campaign_id)
         return {"campaign_id": campaign_id, "intake": cdoc["intake"], "candidates": rows,
                 "ranking_config": cdoc.get("ranking_config", {"weights": clean_weights()}),
                 "name": meta["name"] or self._default_name(campaign_id, cdoc["intake"]), "archived": bool(meta["archived"]),
-                "demo": getattr(self.model, "demo", False), **self.gmail_status()}
+                "demo": getattr(self.model, "demo", False), "sending_enabled": self.outbox.campaign_enabled(campaign_id),
+                **self.gmail_status()}
 
     def gmail_status(self):
         return {"gmail_connected": self.gmail is not None, "gmail_sync": bool(self.gmail and self.gmail.can_sync),

@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from . import analytics, demo
 from .cache import Cache
 from .campaigns import CampaignService, Rejected, parse_request
+from .sending import Blocked
 from .storage import ROOT, CampaignStore
 from .workspace import Workspace
 
@@ -102,7 +103,7 @@ def create_app(service=None, token=None):
             return JSONResponse({"detail": "missing or bad app token"}, 401)
         return await call_next(request)
 
-    for exc, code in ((KeyError, 404), (Rejected, 409), (ValueError, 400)):
+    for exc, code in ((KeyError, 404), (Rejected, 409), (Blocked, 409), (ValueError, 400)):
         app.add_exception_handler(exc, lambda r, e, code=code: JSONResponse({"detail": str(e).strip("'")}, code))
 
     @app.get("/", response_class=HTMLResponse)
@@ -119,7 +120,8 @@ def create_app(service=None, token=None):
     @app.get("/api/status")
     def status():
         s = svc()
-        return {"demo": getattr(s.model, "demo", False), "model": s.model.model, **s.gmail_status()}
+        return {"demo": getattr(s.model, "demo", False), "model": s.model.model,
+                **s.gmail_status(), "sending": s.outbox.status()}
 
     # Reusable messaging workspace. Template versions are immutable snapshots.
     @app.get("/api/templates")
@@ -451,6 +453,66 @@ def create_app(service=None, token=None):
             raise HTTPException(404, "unknown action")
         analytics.mark(svc().cache, nid, "read_at" if action == "read" else "dismissed_at")
         return {"ok": True}
+
+    # ------------------------------------------------------------ sending (opt-in, off by default)
+    @app.get("/api/sending")
+    def sending_status():
+        return {**svc().outbox.status(), "audit": svc().outbox.global_audit(20)}
+
+    @app.patch("/api/sending/settings")
+    def sending_settings(body: dict = Body(...)):
+        return svc().outbox.update_settings(body)
+
+    @app.post("/api/sending/pause")
+    def sending_pause():
+        return svc().outbox.pause(True)
+
+    @app.post("/api/sending/unpause")
+    def sending_unpause():
+        return svc().outbox.pause(False)
+
+    @app.post("/api/sending/emergency-stop")
+    def sending_emergency_stop():
+        return svc().outbox.emergency_stop()
+
+    @app.get("/api/suppressions")
+    def suppressions():
+        return svc().outbox.suppressions()
+
+    @app.post("/api/suppressions")
+    def suppress(body: dict = Body(...)):
+        return svc().outbox.suppress(body.get("email"), body.get("reason", "do_not_contact"))
+
+    @app.patch("/api/campaigns/{cid}/sending")
+    def campaign_sending(cid: str, body: dict = Body(...)):
+        svc()._require(cid)
+        return svc().outbox.set_campaign_enabled(cid, bool(body.get("enabled")))
+
+    @app.post("/api/campaigns/{cid}/sends/preview")
+    def send_preview(cid: str, body: dict = Body(...)):
+        return svc().preview_send(cid, str(body.get("candidate_id", "")), body.get("scheduled_at") or None)
+
+    @app.post("/api/campaigns/{cid}/sends")
+    def send_confirm(cid: str, body: dict = Body(...)):
+        return svc().confirm_send(cid, str(body.get("candidate_id", "")), str(body.get("approval_hash", "")),
+                                  body.get("scheduled_at") or None)
+
+    @app.get("/api/campaigns/{cid}/sends")
+    def send_list(cid: str):
+        svc()._require(cid)
+        return svc().outbox.list(cid)
+
+    @app.get("/api/sends/{send_id}")
+    def send_detail(send_id: str):
+        return svc().outbox.detail(send_id)
+
+    @app.post("/api/sends/{send_id}/cancel")
+    def send_cancel(send_id: str):
+        return svc().outbox.view(svc().outbox.cancel(send_id))
+
+    @app.post("/api/sends/{send_id}/outcome")
+    def send_outcome(send_id: str, body: dict = Body(...)):
+        return svc().outbox.view(svc().outbox.record_outcome(send_id, body.get("outcome")))
 
     return app
 

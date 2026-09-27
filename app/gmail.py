@@ -7,10 +7,17 @@ Scopes:
 HERMES only ever calls threads.get with thread IDs it recorded when it created
 a draft. It never lists or searches the inbox. Note: with gmail.metadata granted,
 Gmail rejects format=full and `q` searches, so this module uses only
-format=metadata/minimal and plain listing of drafts.
+format=metadata/minimal and plain listing of drafts. Sending is separately
+opt-in and requires gmail.send plus application-level safety gates.
 
 Each draft carries an X-Outreach-Key header so a retry after a timeout can
 reconcile against existing drafts instead of creating a duplicate.
+
+Sending goes draft -> drafts.send. Gmail deletes a draft when it sends it and
+cannot send it twice, so "does our draft still exist?" answers "did the send
+land?" without any inbox read scope. `can_send` is True only when the token
+was explicitly granted gmail.send (python -m app.gmail --enable-sending).
+gmail.compose alone technically permits sending, so the app gates on this.
 """
 import base64
 import os
@@ -20,12 +27,17 @@ from pathlib import Path
 COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
 METADATA = "https://www.googleapis.com/auth/gmail.metadata"
 SCOPES = [COMPOSE, METADATA]
+SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 THREAD_HEADERS = ["From", "Subject", "Message-ID", "Auto-Submitted"]
 REAUTH = "Gmail authorization expired, was revoked, or lacks a scope. Run `python -m app.gmail` to reconnect."
 
 
 class GmailAuthError(Exception):
     """Credentials unusable (expired/revoked/missing scope). The user must re-consent."""
+
+
+def http_status(exc):
+    return getattr(getattr(exc, "resp", None), "status", None)
 
 
 def credentials_paths():
@@ -79,12 +91,12 @@ def _ids(res):
 class GmailDrafts:
     """Thin wrapper over the official client. `service` injectable for tests."""
 
-    def __init__(self, service, can_sync=True):
-        self.svc = service
+    def __init__(self, service, can_sync=True, can_send=False):
+        self.svc, self.can_send, self._sender = service, can_send, None
         self.can_sync = can_sync  # False when the token predates the gmail.metadata scope
 
     @classmethod
-    def connect(cls, interactive=False):
+    def connect(cls, interactive=False, want_send=False):
         """Returns a GmailDrafts, None when OAuth isn't set up, or raises GmailAuthError when it's revoked."""
         from google.auth.exceptions import RefreshError
         from google.auth.transport.requests import Request
@@ -101,16 +113,19 @@ class GmailDrafts:
                 if not interactive:
                     raise GmailAuthError(REAUTH)
                 creds = None
-        wants_upgrade = creds and interactive and not creds.has_scopes(SCOPES)
+        wants_upgrade = creds and interactive and (
+            not creds.has_scopes(SCOPES) or (want_send and not creds.has_scopes([SEND_SCOPE])))
         if not (creds and creds.valid and creds.has_scopes([COMPOSE])) or wants_upgrade:
             if not (interactive and cred_path.exists()):
                 return None
             from google_auth_oauthlib.flow import InstalledAppFlow
-            creds = InstalledAppFlow.from_client_secrets_file(str(cred_path), SCOPES).run_local_server(port=0)
+            scopes = SCOPES + ([SEND_SCOPE] if want_send else [])
+            creds = InstalledAppFlow.from_client_secrets_file(str(cred_path), scopes).run_local_server(port=0)
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json())
         os.chmod(token_path, 0o600)
-        return cls(build("gmail", "v1", credentials=creds, cache_discovery=False), creds.has_scopes([METADATA]))
+        return cls(build("gmail", "v1", credentials=creds, cache_discovery=False),
+                   can_sync=creds.has_scopes([METADATA]), can_send=creds.has_scopes([SEND_SCOPE]))
 
     def create(self, to, subject, body, key, reply_to=None, attachments=None,
                thread_id=None, in_reply_to=None):
@@ -118,14 +133,29 @@ class GmailDrafts:
         payload = build_message(to, subject, body, key, reply_to, attachments, thread_id, in_reply_to)
         return _ids(_run(self.svc.users().drafts().create(userId="me", body=payload)))
 
-    def exists(self, draft_id):
+    def draft_exists(self, draft_id):
+        """True/False from Gmail; network or server errors raise so callers stay 'uncertain'."""
         try:
             _run(self.svc.users().drafts().get(userId="me", id=draft_id, format="minimal"))
             return True
-        except Exception:
+        except KeyError:
             return False
+        except Exception as e:
+            if http_status(e) == 404:
+                return False
+            raise
 
-    def find_by_key(self, key, scan=50):
+    def send_draft(self, draft_id):
+        """Returns Gmail's Message resource (id, threadId, labelIds)."""
+        return self.svc.users().drafts().send(userId="me", body={"id": draft_id}).execute()
+
+    def sender(self):
+        """Authenticated address; Gmail sets From to it."""
+        if not self._sender:
+            self._sender = self.svc.users().getProfile(userId="me").execute()["emailAddress"]
+        return self._sender
+
+    def find_by_key(self, key, scan=100):
         """Reconcile: look through recent drafts for our header. Bounded scan. Returns ids or None."""
         res = _run(self.svc.users().drafts().list(userId="me", maxResults=scan))
         for d in res.get("drafts", []):
@@ -147,12 +177,14 @@ class GmailDrafts:
 
 
 if __name__ == "__main__":
-    # One-time desktop OAuth (and scope upgrade): python -m app.gmail
+    # One-time desktop OAuth; add --enable-sending to also grant gmail.send.
+    import sys
     try:
-        g = GmailDrafts.connect(interactive=True)
+        g = GmailDrafts.connect(interactive=True, want_send="--enable-sending" in sys.argv)
     except GmailAuthError as e:
         g = None
         print(e)
-    print("Gmail connected (drafts + reply tracking)." if g and g.can_sync
+    print(("Gmail connected (drafts + reply tracking"
+           + (" + sending" if g.can_send else "") + ").") if g and g.can_sync
           else f"Put your OAuth client JSON at {credentials_paths()[0]} first." if not g
           else "Gmail connected for drafts only; reply tracking scope was not granted.")

@@ -210,6 +210,44 @@
       <div id="queue-list"></div>
     </section>
 
+    <section id="sending" class="sending" aria-labelledby="sending-title">
+      <div class="sending-head">
+        <div>
+          <div class="eyebrow">Sending</div>
+          <h3 id="sending-title"><span id="send-mode">Draft-only</span></h3>
+          <p id="send-summary" class="note"></p>
+        </div>
+        <div class="controls">
+          <button id="btn-send-global" class="ghost small">Turn sending on…</button>
+          <label class="check"><input type="checkbox" id="send-campaign"> This campaign may send</label>
+          <button id="btn-send-pause" class="ghost small">Pause all</button>
+          <button id="btn-estop" class="stop small">Emergency stop</button>
+        </div>
+      </div>
+      <details>
+        <summary>Limits, quiet hours &amp; do-not-contact</summary>
+        <form id="send-settings" class="send-settings">
+          <label>Timezone<input name="timezone" placeholder="America/New_York"></label>
+          <label>Quiet from<input name="quiet_start" type="time"></label>
+          <label>Quiet until<input name="quiet_end" type="time"></label>
+          <label>Per day<input name="daily_limit" type="number" min="0" max="500"></label>
+          <label>Per hour<input name="hourly_limit" type="number" min="0" max="500"></label>
+          <label>Seconds between<input name="spacing_seconds" type="number" min="0" max="86400"></label>
+          <button type="submit" class="small">Save limits</button>
+        </form>
+        <form id="suppress-form" class="send-settings">
+          <label>Never email this address<input name="email" type="email" required></label>
+          <label>Reason<select name="reason"><option value="do_not_contact">do not contact</option>
+            <option value="declined">declined</option><option value="bounced">bounced</option></select></label>
+          <button type="submit" class="small ghost">Add to do-not-contact</button>
+        </form>
+      </details>
+      <div class="sends-wrap"><table class="people sends">
+        <thead><tr><th>Person</th><th>To</th><th>When</th><th>Status</th><th></th></tr></thead>
+        <tbody id="send-rows"><tr><td colspan="5" class="empty">Nothing scheduled. Approve a draft, then use Send or Schedule on it.</td></tr></tbody>
+      </table></div>
+    </section>
+
     <details class="activity">
       <summary>Recent activity</summary>
       <ol id="events"></ol>
@@ -355,6 +393,20 @@
     </div>
   </section>
 </main>
+
+<dialog id="send-dialog" aria-labelledby="send-dialog-title">
+  <form method="dialog" class="send-confirm">
+    <div class="eyebrow">Final approval · this exact message</div>
+    <h3 id="send-dialog-title"></h3>
+    <dl id="send-facts" class="facts"></dl>
+    <pre id="send-body" class="send-body"></pre>
+    <ul id="send-blockers" class="flags"></ul>
+    <div class="actions">
+      <button value="cancel" class="ghost">Back</button>
+      <button id="btn-send-confirm" value="confirm" class="primary">Confirm</button>
+    </div>
+  </form>
+</dialog>
 
 <div id="toast" class="toast" role="status" hidden></div>
 <script src="/static/app.js"></script>

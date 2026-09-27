@@ -179,6 +179,28 @@ table.people { width: 100%; border-collapse: collapse; font-size: 14px; }
 .fu-actions input[type=date] { width: auto; }
 @media (max-width: 560px) { .outcome-form { grid-template-columns: 1fr; } }
 
+/* sending */
+.sending { margin-top: 20px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; padding: 14px; }
+.sending-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: start; }
+.sending h3 { font-size: 20px; }
+.sending.live { border-left: 4px solid var(--scarlet); }
+.sending summary { cursor: pointer; font-size: 13px; margin: 10px 0 6px; }
+.send-settings { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 8px; }
+.send-settings label { flex: 1 1 120px; }
+.sends { margin-top: 8px; }
+.sends-wrap { overflow-x: auto; }
+.send-at { width: auto; }
+.sends td:last-child { white-space: nowrap; }
+.stop { background: var(--scarlet); border-color: var(--scarlet); color: #fff; }
+dialog { border: 1px solid var(--ink); border-radius: 4px; padding: 0; width: min(640px, calc(100vw - 32px)); }
+dialog::backdrop { background: #1b243399; }
+.send-confirm { padding: 18px; display: grid; gap: 10px; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 14px; }
+.facts dt { font: 500 11px var(--mono); text-transform: uppercase; color: var(--ink-soft); padding-top: 3px; }
+.facts dd { margin: 0; word-break: break-word; }
+.send-body { white-space: pre-wrap; font: 13px/1.55 var(--body); background: var(--paper); padding: 12px; border-radius: 4px;
+  max-height: 40vh; overflow: auto; margin: 0; }
+
 .activity { margin-top: 20px; font-size: 13px; }
 .workspace-tools { background: var(--sheet); border: 1px solid var(--rule); padding: 10px 14px; margin-bottom: 14px; }
 .tool-grid, .library-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 12px; }
@@ -248,7 +270,8 @@ table.people { width: 100%; border-collapse: collapse; font-size: 14px; }
   .switcher { margin-left: 0; width: 100%; }
   .switcher select { max-width: none; flex: 1; }
   .row { grid-template-columns: 1fr; }
-  .people th:nth-child(4), .people td:nth-child(4) { display: none; }
+  .people:not(.sends) th:nth-child(4), .people:not(.sends) td:nth-child(4),
+  .sends th:nth-child(2), .sends td:nth-child(2) { display: none; }
   .status { white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) {
