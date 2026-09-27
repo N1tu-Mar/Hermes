@@ -10,6 +10,7 @@ import uvicorn
 
 from app.api import create_app
 from app.config import Config
+from app.workspace import Workspace
 from tests.conftest import make_service
 
 playwright = pytest.importorskip("playwright.sync_api")
@@ -21,6 +22,7 @@ def server(tmp_path):
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     svc = make_service(tmp_path / "data")
+    svc.workspace = Workspace(svc.cache, svc.store.root)
     app = create_app(service=svc, token="browser-token", config=Config(port=port, shutdown_grace=0))
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     t = threading.Thread(target=srv.run, daemon=True)

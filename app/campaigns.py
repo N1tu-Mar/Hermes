@@ -25,7 +25,6 @@ from .jobs import Coordinator
 from .ledger import MANUAL_INTERACTIONS, Ledger, clean_tags
 from .openai_client import BudgetExceeded, ModelError
 from .sending import Outbox, payload_hash
-from .workspace import Workspace
 
 log = logging.getLogger("campaigns")
 
@@ -144,7 +143,7 @@ class CampaignService:
     def __init__(self, store, cache, model, fetcher, gmail=None, workspace=None,
                  clock=time.time, send_every=15):
         self.store, self.cache, self.model, self.fetcher, self.gmail = store, cache, model, fetcher, gmail
-        self.workspace = workspace or Workspace(cache, store.root)
+        self.workspace = workspace
         self.ledger = Ledger(cache)
         self.now = clock  # injectable clock for follow-up scheduling and sending
         self.outreach = Outreach(self)

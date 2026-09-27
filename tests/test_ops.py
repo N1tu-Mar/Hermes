@@ -35,7 +35,7 @@ def test_backup_destroy_restore_reproduces_everything(env, tmp_path):
     ids = run_research_flow(client, cid)
     client.post(f"/api/campaigns/{cid}/drafts/{ids[0]}/approve")
     root = svc.store.root
-    (root / "attachments").mkdir(exist_ok=True)
+    (root / "attachments").mkdir()
     (root / "attachments" / "deck.pdf").write_bytes(b"%PDF-1.4 fake deck")  # arbitrary files are covered too
     before = snapshot(root)
 
