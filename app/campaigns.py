@@ -5,12 +5,13 @@ through the API routes; domain modules below it know nothing about either.
 """
 import asyncio
 import re
+import time
+from datetime import datetime
 
 from . import outlines, research, writer
 from .contracts import clean_intake, dedupe_key, normalize_url
 from .jobs import Coordinator
 from .openai_client import BudgetExceeded, ModelError
-from .storage import now_iso
 
 
 class Rejected(Exception):
@@ -277,8 +278,8 @@ class CampaignService:
         if followup:
             inv = self.cache.get_draft(campaign_id, cand_id, outlines.TEMPLATES["speaker_invite"]["version"])
             if inv and inv.get("invited_at"):
-                earlier = {"invitation_subject": inv["subject"], "invited_on": now_iso()[:10] if False else
-                           __import__("datetime").datetime.fromtimestamp(inv["invited_at"]).strftime("%B %d")}
+                earlier = {"invitation_subject": inv["subject"],
+                           "invited_on": datetime.fromtimestamp(inv["invited_at"]).strftime("%B %d").replace(" 0", " ")}
         return outlines.build_outline(intake, profile, intake.get("sender_background"), followup, earlier), profile
 
     def generate(self, campaign_id, candidate_ids, followup=False):
@@ -358,7 +359,7 @@ class CampaignService:
         if not d or d["status"] not in ("approved", "gmail_draft_created"):
             raise Rejected("only an approved speaker invitation can be marked as sent")
         self.cache.upsert_draft(campaign_id, cand_id, d["template_version"],
-                                invited_at=__import__("time").time())
+                                invited_at=time.time())
         return {"ok": True}
 
     # ---------------------------------------------------------------- gmail
@@ -397,7 +398,7 @@ class CampaignService:
                 self.cache.upsert_draft(campaign_id, d["candidate_id"], tv, gmail_draft_id=found, status="gmail_draft_created")
                 return {"result": "reconciled existing draft", "gmail_draft_id": found}
         to = profile.get("contact_email") if profile.get("email_verified_on_page") else None
-        self.cache.upsert_draft(campaign_id, d["candidate_id"], tv, gmail_attempt_at=__import__("time").time())
+        self.cache.upsert_draft(campaign_id, d["candidate_id"], tv, gmail_attempt_at=time.time())
         try:
             gid = await asyncio.to_thread(self.gmail.create, to, d["subject"], d["body"], key)
         except Exception as e:
