@@ -23,7 +23,7 @@ class FakeGmailService:
     """Mimics service.users().drafts().create/get/list(...).execute()."""
 
     def __init__(self):
-        self.drafts, self.fail_next = {}, False
+        self.store, self.fail_next = {}, False
 
     def users(self):
         return self
@@ -46,16 +46,16 @@ class FakeGmailService:
     def _store(self, body):
         import base64, email
         msg = email.message_from_bytes(base64.urlsafe_b64decode(body["message"]["raw"]))
-        did = f"d{len(self.drafts) + 1}"
-        self.drafts[did] = msg
+        did = f"d{len(self.store) + 1}"
+        self.store[did] = msg
         return did
 
     def get(self, userId, id, format):
-        m = self.drafts[id]
+        m = self.store[id]
         return _Exec(lambda: {"id": id, "message": {"payload": {"headers": [{"name": k, "value": v} for k, v in m.items()]}}})
 
     def list(self, userId, maxResults):
-        return _Exec(lambda: {"drafts": [{"id": d} for d in self.drafts]})
+        return _Exec(lambda: {"drafts": [{"id": d} for d in self.store]})
 
 
 class _Exec:
@@ -191,7 +191,7 @@ def test_full_flow_research(env):
 
     # Gmail refuses unapproved drafts
     res = client.post(f"/api/campaigns/{cid}/gmail-drafts", json={"candidate_ids": [ids[0]]}).json()["results"]
-    assert res[0]["result"].startswith("skipped") and not fake.drafts
+    assert res[0]["result"].startswith("skipped") and not fake.store
 
     client.patch(f"/api/campaigns/{cid}/drafts/{ids[0]}", json={"subject": d["subject"], "body": d["body"] + "\nThank you!"})
     assert client.post(f"/api/campaigns/{cid}/drafts/{ids[0]}/approve").status_code == 200
@@ -204,8 +204,8 @@ def test_full_flow_research(env):
     assert res[0]["result"] == "reconciled existing draft"
     res = client.post(f"/api/campaigns/{cid}/gmail-drafts", json={"candidate_ids": [ids[0]]}).json()["results"]
     assert res[0]["result"] == "already created"
-    assert len(fake.drafts) == 1
-    assert fake.drafts["d1"]["To"] == "avery.lin@demo.example.edu"
+    assert len(fake.store) == 1
+    assert fake.store["d1"]["To"] == "avery.lin@demo.example.edu"
 
     # regenerate: no new API calls for unchanged inputs, no overwrite of the Gmail draft
     before = client.get(f"/api/campaigns/{cid}/progress").json()["usage"]["api_calls"]
