@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outreach Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="#" data-go="home">Outreach Desk</a>
+  <span id="mode-badge" class="badge" hidden></span>
+  <label class="switcher">Campaign
+    <select id="campaign-select"><option value="">New campaign</option></select>
+  </label>
+</header>
+
+<main>
+  <p id="token-warning" class="banner warn" hidden>
+    This page needs the app link printed in the terminal (it ends with <code>?t=…</code>). Open that link to continue.
+  </p>
+
+  <!-- 1. Landing -->
+  <section id="view-home" class="view">
+    <h1 class="thesis">What do you want to do today?</h1>
+    <div class="modes" role="group" aria-label="Choose a mode">
+      <button class="mode" data-mode="research">
+        <span class="mode-title">Research</span>
+        <span class="mode-sub">Find professors and labs, verify their work, draft research-interest emails.</span>
+      </button>
+      <button class="mode" data-mode="outreach">
+        <span class="mode-title">Outreach</span>
+        <span class="mode-sub">Reach startups, professors, or speakers and mentors for a club.</span>
+      </button>
+    </div>
+    <div id="subtypes" class="subtypes" role="group" aria-label="Who are you reaching?" hidden>
+      <button class="chip" data-subtype="startup">Startups</button>
+      <button class="chip" data-subtype="research_professor">Research professors</button>
+      <button class="chip" data-subtype="speaker_mentor">Club/program speakers or mentors</button>
+    </div>
+    <form id="ask-form" class="ask" hidden>
+      <label for="ask-text" class="eyebrow">Describe who you're looking for</label>
+      <textarea id="ask-text" rows="3" required
+        placeholder="Rutgers/Princeton professors working on computational neurodevelopment who may work with undergraduates"></textarea>
+      <button type="submit" class="primary">Read my request</button>
+    </form>
+  </section>
+
+  <!-- 2. Intake confirmation -->
+  <section id="view-intake" class="view" hidden>
+    <h2>Check what I understood</h2>
+    <p class="lede">Nothing is searched until you confirm. Edit anything that's off.</p>
+    <div class="intake-grid">
+      <aside class="original">
+        <div class="eyebrow">You wrote</div>
+        <blockquote id="original-text"></blockquote>
+        <p id="missing-question" class="banner ask-back" hidden></p>
+      </aside>
+      <form id="intake-form" class="fields">
+        <div class="row">
+          <label>Mode<select name="mode"><option value="research">Research</option><option value="outreach">Outreach</option></select></label>
+          <label>Reaching<select name="subtype">
+            <option value="research_professor">Research professors</option>
+            <option value="startup">Startups</option>
+            <option value="speaker_mentor">Speakers or mentors</option></select></label>
+        </div>
+        <label>Institutions / organizations <small>comma separated</small><input name="organizations"></label>
+        <div class="row">
+          <label>Locations<input name="locations"></label>
+          <label>Work style<input name="work_style" placeholder="remote, in-person, hybrid"></label>
+        </div>
+        <label>Research areas<input name="research_areas"></label>
+        <label>Industries<input name="industries"></label>
+        <label>Other criteria<input name="other_criteria"></label>
+        <label>Your ask<input name="outreach_goal" placeholder="e.g. whether you have room for an undergraduate researcher"></label>
+        <label data-for="speaker_mentor">Event details <small>organization, format, timing, remote option</small><input name="event_details"></label>
+        <label>Your background <small>used in every email; required before drafting</small>
+          <textarea name="sender_background" rows="3" placeholder="I'm Nitu, a Rutgers student studying … and on the executive board of …"></textarea></label>
+        <div class="row">
+          <label>Max people<input name="max_candidates" type="number" min="1" max="100" value="20"></label>
+          <label>API call budget<input name="budget" type="number" min="1" max="1000" value="60"></label>
+        </div>
+        <p id="projection" class="note"></p>
+        <div class="actions">
+          <button type="button" class="ghost" data-go="home">Start over</button>
+          <button type="submit" class="primary">Confirm and find people</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <!-- 3. Workspace -->
+  <section id="view-work" class="view" hidden>
+    <div class="work-head">
+      <div>
+        <div class="eyebrow" id="work-kind"></div>
+        <h2 id="work-title"></h2>
+      </div>
+      <div class="controls">
+        <button id="btn-discover" class="ghost">Find more people</button>
+        <button id="btn-stop" class="ghost">Stop</button>
+        <button id="btn-resume" class="ghost">Resume</button>
+        <button id="btn-edit-intake" class="ghost">Edit ask &amp; background</button>
+      </div>
+    </div>
+
+    <div id="progress" class="progress" aria-live="polite"></div>
+
+    <div class="work-grid">
+      <div class="table-wrap">
+        <div class="table-tools">
+          <label class="check"><input type="checkbox" id="check-all"> All</label>
+          <button id="btn-research" class="primary small">Research selected</button>
+          <button id="btn-generate" class="small">Draft emails</button>
+          <button id="btn-followup" class="small" hidden>Draft RSVP follow-ups</button>
+          <button id="btn-exclude" class="ghost small">Exclude</button>
+          <button id="btn-include" class="ghost small">Restore</button>
+        </div>
+        <table class="people">
+          <thead><tr><th></th><th>Person</th><th>Research</th><th>Email</th><th>Draft</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="5" class="empty">No people yet. Discovery runs after you confirm the request.</td></tr></tbody>
+        </table>
+        <div class="gmail-bar">
+          <span id="gmail-state" class="note"></span>
+          <button id="btn-gmail" class="primary">Create Gmail drafts for approved</button>
+          <a id="btn-export" class="ghost button" target="_blank">Export approved</a>
+        </div>
+        <div id="gmail-results" class="note"></div>
+      </div>
+
+      <aside id="detail" class="detail" aria-live="polite">
+        <p class="empty">Pick a person to see sources and their draft.</p>
+      </aside>
+    </div>
+
+    <details class="activity">
+      <summary>Recent activity</summary>
+      <ol id="events"></ol>
+    </details>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
