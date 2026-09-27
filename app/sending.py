@@ -113,7 +113,10 @@ class Outbox:
             if k in ("enabled", "paused"):
                 clean[k] = bool(v)
             elif k == "timezone":
-                ZoneInfo(str(v))  # raises on an unknown zone
+                try:
+                    ZoneInfo(str(v))
+                except (KeyError, ValueError):  # ZoneInfoNotFoundError is a KeyError, which would read as a 404
+                    raise ValueError(f"unknown timezone {v}")
                 clean[k] = str(v)
             elif k in ("quiet_start", "quiet_end"):
                 if not HHMM.match(str(v)):

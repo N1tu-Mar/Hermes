@@ -15,7 +15,8 @@ TOKEN_FILE = Path(os.path.expanduser("~/.config/outreach/app_token"))
 
 mcp = MCPServer("outreach-desk", instructions=(
     "Research and outreach assistant for a Rutgers student. Creates Gmail DRAFTS only after a human approved "
-    "each draft in the web UI; it never sends email."))
+    "each draft in the web UI. It cannot send, approve a send, or turn sending on: a human does that in the web UI. "
+    "It can preview a send, inspect the queue, cancel scheduled messages, pause all sending, or trigger the emergency stop."))
 
 
 def call(method, path, body=None):
@@ -78,6 +79,44 @@ def list_campaign(campaign_id: str = "") -> dict:
 def create_gmail_drafts(campaign_id: str, candidate_ids: list[str]) -> dict:
     """Create Gmail drafts (not sent) for the given candidate IDs. Only drafts a human already approved are created."""
     return call("POST", f"/campaigns/{campaign_id}/gmail-drafts", {"candidate_ids": candidate_ids})
+
+
+@mcp.tool()
+def sending_status() -> dict:
+    """Sending settings (off by default), limits, quiet hours, queue counts, and recent sending audit events."""
+    return call("GET", "/sending")
+
+
+@mcp.tool()
+def preview_send(campaign_id: str, candidate_id: str, scheduled_at: str = "") -> dict:
+    """Show the exact message that would be sent (recipient, sender, subject, body, time) and any blockers.
+    Read-only; works in draft-only mode. Confirming a send is only possible in the web UI."""
+    return call("POST", f"/campaigns/{campaign_id}/sends/preview",
+                {"candidate_id": candidate_id, "scheduled_at": scheduled_at or None})
+
+
+@mcp.tool()
+def list_sends(campaign_id: str) -> dict:
+    """Scheduled and past sends for a campaign with their status."""
+    return {"sends": call("GET", f"/campaigns/{campaign_id}/sends")}
+
+
+@mcp.tool()
+def cancel_send(send_id: str) -> dict:
+    """Cancel one scheduled message before it goes out."""
+    return call("POST", f"/sends/{send_id}/cancel")
+
+
+@mcp.tool()
+def pause_sending() -> dict:
+    """Hold every scheduled message. Only a human can unpause, in the web UI."""
+    return call("POST", "/sending/pause")
+
+
+@mcp.tool()
+def emergency_stop() -> dict:
+    """Turn sending off and cancel every scheduled message. Cancelled messages need fresh human approval."""
+    return call("POST", "/sending/emergency-stop")
 
 
 if __name__ == "__main__":
