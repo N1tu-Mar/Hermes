@@ -34,7 +34,7 @@ class Coordinator:
 
     @staticmethod
     def lane(kind):
-        return "write" if kind == "write" else "research"  # discover shares research lane
+        return "write" if kind in ("write", "followup") else "research"  # discover shares research lane
 
     def submit(self, campaign_id, kind, candidate_id=None):
         job_id = f"job_{secrets.token_hex(5)}"

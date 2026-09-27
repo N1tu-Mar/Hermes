@@ -165,6 +165,20 @@ table.people { width: 100%; border-collapse: collapse; font-size: 14px; }
 .card pre { margin: 0; white-space: pre-wrap; font: 12px/1.5 var(--mono); color: var(--ink-soft); }
 .inline-form { display: grid; gap: 8px; }
 
+.scope-note { padding: 0 10px 10px; margin: 0; }
+.outcome-form { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 6px; align-items: end; }
+.seq-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.timeline { list-style: none; padding: 0; margin: 0; font: 12px/1.5 var(--mono); color: var(--ink-soft); display: grid; gap: 4px; }
+.timeline b { color: var(--ink); font-weight: 500; }
+.queue { margin-top: 20px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; padding: 14px; }
+.queue-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.queue-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.fu { border-top: 1px solid var(--rule); padding: 12px 0; display: grid; gap: 8px; }
+.fu textarea { min-height: 140px; }
+.fu-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.fu-actions input[type=date] { width: auto; }
+@media (max-width: 560px) { .outcome-form { grid-template-columns: 1fr; } }
+
 .activity { margin-top: 20px; font-size: 13px; }
 .workspace-tools { background: var(--sheet); border: 1px solid var(--rule); padding: 10px 14px; margin-bottom: 14px; }
 .tool-grid, .library-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 12px; }

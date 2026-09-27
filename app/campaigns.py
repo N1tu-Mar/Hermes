@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -15,6 +16,8 @@ from . import analytics, csvio, outlines, research, writer
 from .contracts import EMAIL_RE, INTAKE_FIELDS, clean_intake, dedupe_key, normalize_url
 from .ranking import DEFAULT_WEIGHTS, clean_weights, score_candidate
 from .storage import now_iso
+from .followups import Outreach
+from .gmail import GmailAuthError
 from .jobs import Coordinator
 from .ledger import MANUAL_INTERACTIONS, Ledger, clean_tags
 from .openai_client import BudgetExceeded, ModelError
@@ -101,8 +104,10 @@ class CampaignService:
         self.store, self.cache, self.model, self.fetcher, self.gmail = store, cache, model, fetcher, gmail
         self.workspace = workspace
         self.ledger = Ledger(cache)
+        self.now = time.time  # injectable clock for follow-up scheduling
+        self.outreach = Outreach(self)
         self.jobs = Coordinator(cache, {"discover": self._do_discover, "research": self._do_research,
-                                        "write": self._do_write})
+                                        "write": self._do_write, "followup": self.outreach.generate})
         self.jobs.on_finish = self._job_finished
 
     async def parse_intake(self, text, mode=None, subtype=None):
@@ -147,7 +152,27 @@ class CampaignService:
             except Exception:
                 logging.exception("startup repair failed for %s", cid)
         analytics.backfill(self)
+        self.outreach.reset_interrupted()
         self.jobs.start()
+        minutes = float(os.environ.get("GMAIL_SYNC_MINUTES", 15))
+        if minutes > 0:
+            self.jobs.tasks.append(asyncio.create_task(self._sync_loop(minutes)))  # cancelled with the workers
+
+    async def _sync_loop(self, minutes):
+        while True:
+            await asyncio.sleep(minutes * 60)
+            try:
+                await self.sync_now()
+            except Exception:
+                logging.exception("background Gmail sync failed")
+
+    async def sync_now(self, campaign_id=None):
+        """Bounded sync of HERMES threads, then queue any follow-ups that became due."""
+        if campaign_id:
+            self._require(campaign_id)
+        res = await asyncio.to_thread(self.outreach.sync, campaign_id)
+        res["followups_queued"] = self.outreach.tick()
+        return res
 
     def _link_all(self, campaign_id):
         """Link every candidate to a global contact (backfills campaigns created before the ledger)."""
@@ -838,6 +863,7 @@ class CampaignService:
         analytics.milestone(self.cache, campaign_id, cand_id, "sent")
         self.ledger.log_for(campaign_id, cand_id, "invitation", f"Invitation sent: {d['subject']}",
                             {"gmail_draft_id": d.get("gmail_draft_id")})
+        self.outreach.record_sent(campaign_id, cand_id, time.time(), "manual", subject=d["subject"])
         return {"ok": True}
 
     def mark_contacted(self, campaign_id, cand_id):
@@ -852,6 +878,7 @@ class CampaignService:
         self.cache.upsert_draft(campaign_id, cand_id, d["template_version"], invited_at=time.time())
         if self.workspace: self.workspace.record_contacted(campaign_id, cand_id, cand, profile, "message_sent")
         analytics.milestone(self.cache, campaign_id, cand_id, "sent")
+        self.outreach.record_sent(campaign_id, cand_id, time.time(), "manual", subject=d["subject"])
         return {"ok": True}
 
     # ---------------------------------------------------------------- outcomes and notifications
@@ -932,6 +959,8 @@ class CampaignService:
                 r["result"] = f"skipped: {dnc}"
             elif not d or d["status"] not in ("approved", "gmail_draft_created"):
                 r["result"] = "skipped: not approved"
+            elif (self.outreach.contact(campaign_id, cand_id) or {}).get("do_not_contact"):
+                r["result"] = "skipped: marked do not contact"
             elif d.get("gmail_draft_id"):
                 r.update(result="already created", gmail_draft_id=d["gmail_draft_id"])
             elif not self._still_current(campaign_id, d):
@@ -945,40 +974,46 @@ class CampaignService:
         return results
 
     async def _gmail_one(self, campaign_id, d, profile):
-        key = f"{campaign_id}:{d['candidate_id']}:{d['template_version']}:{d.get('input_hash') or 'legacy'}"
-        tv = d["template_version"]
-        if d.get("gmail_attempt_at"):  # earlier attempt with unknown outcome: reconcile before retrying
+        tv, cand = d["template_version"], d["candidate_id"]
+        to = profile.get("contact_email") if profile.get("email_verified_on_page") else None
+        ident = self._identity_for(self.store.candidates(campaign_id)["intake"])
+        attachments = [self.workspace.attachment_payload(x) for x in self.workspace.campaign_attachments(campaign_id)] \
+            if self.workspace else []
+        res = await self.gmail_create(
+            f"{campaign_id}:{cand}:{tv}:{d.get('input_hash') or 'legacy'}", bool(d.get("gmail_attempt_at")),
+            lambda: self.cache.upsert_draft(campaign_id, cand, tv, gmail_attempt_at=time.time()),
+            (to, d["subject"], d["body"]),
+            {"reply_to": ident.get("reply_to") if ident else None, "attachments": attachments})
+        ids = res.pop("ids", None)
+        if ids:
+            self.cache.upsert_draft(campaign_id, cand, tv, gmail_draft_id=ids["draft_id"], status="gmail_draft_created")
+            if not tv.startswith("rsvp_followup"):
+                self.outreach.record_draft(campaign_id, cand, ids, d["subject"])  # thread ID for reply sync
+            self.ledger.log_for(campaign_id, cand, "gmail_draft", f"Gmail draft {res['result']}: {d['subject']}",
+                                {"gmail_draft_id": ids["draft_id"]})
+            self.cache.event(campaign_id, f"{cand}: Gmail draft {res['result']}")
+            if res["result"] == "created" and not to:
+                res["result"] += " (no verified recipient; add To in Gmail)"
+        return res
+
+    async def gmail_create(self, key, attempted, mark_attempt, args, kwargs=None):
+        """Idempotent draft creation: after an attempt with unknown outcome, reconcile by key before retrying."""
+        if attempted:
             try:
                 found = await asyncio.to_thread(self.gmail.find_by_key, key)
             except Exception as e:
                 return {"result": f"uncertain: reconcile failed ({type(e).__name__}); check Gmail Drafts manually"}
             if found:
-                self.cache.upsert_draft(campaign_id, d["candidate_id"], tv, gmail_draft_id=found, status="gmail_draft_created")
-                self.ledger.log_for(campaign_id, d["candidate_id"], "gmail_draft", "Gmail draft reconciled", {"gmail_draft_id": found})
-                return {"result": "reconciled existing draft", "gmail_draft_id": found}
-        to = profile.get("contact_email") if profile.get("email_verified_on_page") else None
-        ident = self._identity_for(self.store.candidates(campaign_id)["intake"])
-        reply_to = ident.get("reply_to") if ident else None
-        self.cache.upsert_draft(campaign_id, d["candidate_id"], tv, gmail_attempt_at=time.time())
+                return {"result": "reconciled existing draft", "gmail_draft_id": found["draft_id"], "ids": found}
+        mark_attempt()
         try:
-            attachments = [self.workspace.attachment_payload(x) for x in self.workspace.campaign_attachments(campaign_id)] \
-                if self.workspace else []
-            gid = await asyncio.to_thread(
-                self.gmail.create, to, d["subject"], d["body"], key, reply_to, attachments)
+            ids = await asyncio.to_thread(self.gmail.create, *args, key=key, **(kwargs or {}))
+        except GmailAuthError as e:
+            self.outreach.gmail_error = str(e)
+            return {"result": f"failed: {e}"}
         except Exception as e:
-            attempt = int(time.time())
-            analytics.notify(self.cache, f"gmail_failed:{campaign_id}:{d['candidate_id']}:{attempt}", "gmail_failed",
-                             f"{d['candidate_id']}: Gmail draft creation failed ({type(e).__name__})",
-                             campaign_id, d["candidate_id"])
-            if type(e).__name__ in ("RefreshError", "InvalidGrantError"):
-                analytics.notify(self.cache, f"oauth:{time.strftime('%Y-%m-%d')}", "oauth",
-                                 "Gmail authorization expired; run `python -m app.gmail` to reconnect")
             return {"result": f"failed ({type(e).__name__}); retry will reconcile first"}
-        self.cache.upsert_draft(campaign_id, d["candidate_id"], tv, gmail_draft_id=gid, status="gmail_draft_created")
-        self.cache.event(campaign_id, f"{d['candidate_id']}: Gmail draft created")
-        self.ledger.log_for(campaign_id, d["candidate_id"], "gmail_draft", f"Gmail draft created: {d['subject']}",
-                            {"gmail_draft_id": gid})
-        return {"result": "created" + ("" if to else " (no verified recipient; add To in Gmail)"), "gmail_draft_id": gid}
+        return {"result": "created", "gmail_draft_id": ids["draft_id"], "ids": ids}
 
     @staticmethod
     def export_one(d, profile):
@@ -1059,21 +1094,29 @@ class CampaignService:
             if d["candidate_id"] not in drafts or d["updated_at"] > drafts[d["candidate_id"]]["updated_at"]:
                 drafts[d["candidate_id"]] = d
         linked, review = self.ledger.campaign_contacts(campaign_id)
+        contacts = self.outreach.contacts(campaign_id)
         rows = []
         for c in cdoc["candidates"]:
             p, d = profiles.get(c["candidate_id"]) or {}, drafts.get(c["candidate_id"]) or {}
             k = linked.get(c["candidate_id"]) or {}
+            o = contacts.get(c["candidate_id"]) or {}
             rows.append({**c, "email": p.get("contact_email"), "email_verified": p.get("email_verified_on_page", False),
                          "fit_reason": p.get("fit_reason") or c.get("fit_hint"), "evidence_count": len(p.get("evidence") or []),
                          "draft_status": d.get("status"), "draft_flags": len(d.get("issues") or []),
                          "gmail_draft_id": d.get("gmail_draft_id"), "contact_id": k.get("contact_id"),
-                         "do_not_contact": k.get("do_not_contact", False), "relationship": k.get("relationship"),
-                         "tags": k.get("tags", []), "contact_review": c["candidate_id"] in review})
+                         "do_not_contact": bool(k.get("do_not_contact") or o.get("do_not_contact")),
+                         "relationship": k.get("relationship"), "tags": k.get("tags", []),
+                         "contact_review": c["candidate_id"] in review, "outcome": o.get("outcome"),
+                         "sent_at": o.get("sent_at"), "sequence_state": o.get("sequence_state")})
         meta = self.ledger.campaign_meta(campaign_id)
         return {"campaign_id": campaign_id, "intake": cdoc["intake"], "candidates": rows,
                 "ranking_config": cdoc.get("ranking_config", {"weights": clean_weights()}),
                 "name": meta["name"] or self._default_name(campaign_id, cdoc["intake"]), "archived": bool(meta["archived"]),
-                "demo": getattr(self.model, "demo", False), "gmail_connected": self.gmail is not None}
+                "demo": getattr(self.model, "demo", False), **self.gmail_status()}
+
+    def gmail_status(self):
+        return {"gmail_connected": self.gmail is not None, "gmail_sync": bool(self.gmail and self.gmail.can_sync),
+                "gmail_error": self.outreach.gmail_error}
 
     def detail(self, campaign_id, cand_id):
         self._require(campaign_id)
@@ -1089,12 +1132,51 @@ class CampaignService:
             if self.workspace and d.get("template_id"):
                 d["template_category"] = self.workspace.get_template(d["template_id"], d.get("template_number"))["category"]
         contact_id = self.ledger.linked(campaign_id, cand_id)
+        global_contact = self.ledger.contact_detail(contact_id) if contact_id else {}
+        outreach_contact = self.outreach.contact(campaign_id, cand_id) or {}
+        outreach_timeline = self.outreach.timeline(campaign_id, cand_id)
+        stage_for_kind = {"gmail_draft": "drafted", "sent": "sent", "reply": "replied",
+                          "bounce": "bounced", "sequence_stopped": "sent"}
+        for event in outreach_timeline:
+            stage = stage_for_kind.get(event["kind"])
+            if event["kind"] == "outcome" and " -> " in (event.get("detail") or ""):
+                stage = event["detail"].split(" -> ", 1)[1].split(":", 1)[0]
+                if stage in ("awaiting_reply", "no_response", "closed"):
+                    stage = "sent"
+            event["stage"] = stage or "drafted"
+        analytics_timeline = analytics.timeline(self.cache, campaign_id, cand_id)
+        for event in analytics_timeline:
+            event.update(kind=event["stage"], detail="", source="system")
         return {"candidate": cand, "profile": self.store.research(campaign_id)["profiles"].get(cand_id), "draft": d,
                 "corrections": [r for r in self.cache.corrections_for(self._aliases(cand))
                                 if r["campaign_id"] == campaign_id or r["subject_key"] in self._aliases(cand)],
-                "timeline": analytics.timeline(self.cache, campaign_id, cand_id),
-                "contact": self.ledger.contact_detail(contact_id) if contact_id else None,
+                "timeline": outreach_timeline + analytics_timeline,
+                "contact": {**global_contact, **outreach_contact} or None,
                 "contact_reviews": self.ledger.reviews(campaign_id=campaign_id, candidate_id=cand_id)}
+
+    # ---------------------------------------------------------------- outcomes & follow-ups
+    def _cand(self, campaign_id, cand_id):
+        self._require(campaign_id)
+        if not any(c["candidate_id"] == cand_id for c in self.store.candidates(campaign_id)["candidates"]):
+            raise KeyError(cand_id)
+
+    def set_outcome(self, campaign_id, cand_id, outcome, note=""):
+        """Manual correction; always audited in the contact timeline."""
+        self._cand(campaign_id, cand_id)
+        self.outreach.set_outcome(campaign_id, cand_id, outcome, "manual", str(note)[:300])
+        return self.outreach.contact(campaign_id, cand_id)
+
+    def sequence(self, campaign_id, cand_id, action):
+        self._cand(campaign_id, cand_id)
+        return self.outreach.sequence_action(campaign_id, cand_id, action)
+
+    def followups(self, campaign_id):
+        self._require(campaign_id)
+        return self.outreach.queue(campaign_id)
+
+    async def followup_action(self, campaign_id, cand_id, step, action, body):
+        self._cand(campaign_id, cand_id)
+        return await self.outreach.act(campaign_id, cand_id, int(step), action, body or {})
 
     def progress(self, campaign_id):
         self._require(campaign_id)

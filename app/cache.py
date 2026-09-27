@@ -8,6 +8,8 @@ is the global ledger (people, links, reviews, interactions, identities,
 campaign metadata; see ledger.py). Schema changes are appended to MIGRATIONS
 and tracked with PRAGMA user_version; never edit an applied migration. It also
 stores reusable messaging assets, analytics, corrections, and policy rules.
+Outreach tracking adds Gmail thread metadata, idempotent follow-up steps, and
+an audit log without reading or storing message bodies.
 """
 import json
 import sqlite3
@@ -94,6 +96,19 @@ CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT, dedupe_key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
   message TEXT NOT NULL, campaign_id TEXT, candidate_id TEXT, created_at REAL NOT NULL,
   read_at REAL, dismissed_at REAL);
+CREATE TABLE IF NOT EXISTS outreach_contacts (
+  campaign_id TEXT, candidate_id TEXT, gmail_thread_id TEXT, gmail_message_id TEXT, rfc_message_id TEXT,
+  subject TEXT, sent_at REAL, sent_source TEXT, outcome TEXT, outcome_at REAL, sequence TEXT,
+  sequence_state TEXT DEFAULT 'active', do_not_contact INTEGER DEFAULT 0, last_synced_at REAL, sync_error TEXT,
+  PRIMARY KEY (campaign_id, candidate_id));
+CREATE TABLE IF NOT EXISTS followups (
+  campaign_id TEXT, candidate_id TEXT, step INTEGER, due_at REAL, status TEXT, attempts INTEGER DEFAULT 0,
+  subject TEXT, body TEXT, issues TEXT, outline TEXT, evidence_ids TEXT, gmail_draft_id TEXT, gmail_attempt_at REAL,
+  updated_at REAL, PRIMARY KEY (campaign_id, candidate_id, step));
+CREATE TABLE IF NOT EXISTS gmail_seen (
+  message_id TEXT PRIMARY KEY, thread_id TEXT, campaign_id TEXT, candidate_id TEXT, kind TEXT, from_addr TEXT, at REAL);
+CREATE TABLE IF NOT EXISTS contact_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT, candidate_id TEXT, at REAL, kind TEXT, detail TEXT, source TEXT);
 """
 USAGE_LOGGED = ("api_calls", "cache_hits", "input_tokens", "output_tokens")
 
@@ -180,8 +195,18 @@ class Cache:
             return [dict(r) for r in self.db.execute(sql, args).fetchall()]
 
     def x(self, sql, args=()):
+        """Execute; returns affected row count (used for compare-and-set claims)."""
         with self.lock:
-            self.db.execute(sql, args)
+            return self.db.execute(sql, args).rowcount
+
+    def upsert(self, table, keys, **fields):
+        """Insert the key row if missing, then set fields. Table/column names are code constants, never input."""
+        with self.lock:
+            self.db.execute(f"INSERT OR IGNORE INTO {table} ({', '.join(keys)}) VALUES ({', '.join('?' * len(keys))})",
+                            tuple(keys.values()))
+            if fields:
+                self.db.execute(f"UPDATE {table} SET {', '.join(f'{k}=?' for k in fields)} WHERE "
+                                + " AND ".join(f"{k}=?" for k in keys), (*fields.values(), *keys.values()))
 
     # pages -------------------------------------------------------------
     def get_page(self, url):

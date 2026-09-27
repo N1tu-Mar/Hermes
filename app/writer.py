@@ -58,7 +58,7 @@ def check_draft(subject, body, outline, profile, used_ids):
     issues = []
     text = f"{subject}\n{body}"
     facts = " ".join(e["claim"] for e in outline["evidence"]) + " " + outline["sender_context"] + " " + \
-        json.dumps(outline.get("event_details") or "") + " " + json.dumps(outline.get("earlier_invite") or "") + \
+        json.dumps(outline.get("event_details") or "") + " " + json.dumps(outline.get("earlier_invite") or "") + " " + json.dumps(outline.get("prior_contact") or "") + \
         " " + outline["ask"]
     if not subject:
         issues.append("empty subject")
@@ -75,7 +75,7 @@ def check_draft(subject, body, outline, profile, used_ids):
         for m in rx.finditer(text):
             if m.group(0).lower() not in facts.lower():
                 issues.append(f"mentions a {label} not in the facts: {m.group(0)}")
-    if RELATIONSHIP_RE.search(text) and not outline.get("earlier_invite"):
+    if RELATIONSHIP_RE.search(text) and not (outline.get("earlier_invite") or outline.get("prior_contact")):
         issues.append("implies a prior relationship that is not recorded")
     if PRAISE_RE.search(text):
         issues.append("unsupported superlative praise")
