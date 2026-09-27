@@ -215,7 +215,7 @@ class CampaignService:
         wanted = set(candidate_ids) if candidate_ids else None
         todo = [c["candidate_id"] for c in cands
                 if c["status"] != "excluded" and c["candidate_id"] not in busy
-                and (c["candidate_id"] in wanted if wanted else c["status"] in ("selected", "research_failed"))
+                and (c["candidate_id"] in wanted if wanted else c["status"] == "selected")  # failed ones retry only when named
                 and (refresh or not self._fresh_profile(profiles, c["candidate_id"]))]
         if len(todo) > self._remaining(campaign_id):
             raise Rejected(f"{len(todo)} research calls projected but only {self._remaining(campaign_id)} left in budget")
