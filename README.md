@@ -1,7 +1,20 @@
-# Outreach Desk
+# HERMES
 
-Local research and outreach assistant: find professors, startup people, and club speakers/mentors; research
-them from public sources; draft personalized emails; put approved ones into Gmail **Drafts**. It never sends mail.
+**HERMES — Human-reviewed Email Research, Messaging, and Engagement System** — is Nitu's personal command center
+for research, outreach, and eventually much broader email automation. It finds professors, startup people, speakers,
+and mentors; researches them from public sources; drafts genuinely personalized messages; and puts approved messages
+into Gmail **Drafts**. The current MVP never sends mail.
+
+## Why HERMES?
+
+In Greek mythology, Hermes is the messenger who moves quickly between worlds. This project borrows that idea for a
+modern workflow: carry an intent from a rough request, through discovery and evidence, into a clear message ready for
+the right person's inbox. HERMES is meant to become more than a one-off email generator. The long-term vision is a
+large personal email-automation system that can manage research, contacts, campaigns, follow-ups, and outcomes while
+keeping consequential actions visible and under human control.
+
+The design principle is **high-volume capability without low-quality outreach**. HERMES automates repetitive research,
+organization, personalization, and drafting, but requires review before an email enters Gmail.
 
 One Python process (FastAPI + asyncio workers + SQLite), plain HTML/CSS/JS UI, optional stdio MCP adapter.
 
@@ -38,7 +51,7 @@ header; if a create call times out, the retry first scans recent drafts for that
 With the app running, register the stdio adapter, e.g. in Claude Code:
 
 ```bash
-claude mcp add outreach-desk -- /path/to/.venv/bin/python -m app.mcp_server
+claude mcp add hermes -- /path/to/.venv/bin/python -m app.mcp_server
 ```
 
 Tools: `create_campaign`, `find_candidates`, `research_candidates`, `generate_drafts`, `list_campaign`,
@@ -86,6 +99,61 @@ intake → discovery → candidate review → research → evidence review → o
 running jobs become `interrupted` and "researching" candidates go back to `selected`. **Resume** re-queues only
 unfinished work: people with a fresh profile and drafts with unchanged inputs are skipped, and Gmail drafts are never
 recreated.
+
+## What is still missing
+
+HERMES currently completes one safe local workflow: create a campaign, discover and research people, draft messages,
+review them, and create Gmail drafts. It is not yet the complete email-automation system described by the long-term
+vision. The main missing capabilities are:
+
+### Contact memory and campaign management
+
+- A global contact ledger across campaigns, including prior outreach, notes, tags, relationship state, and a durable
+  "do not contact again" flag. Deduplication today is primarily within one campaign.
+- Campaign search, rename, archive, duplicate, and delete controls.
+- CSV import/export and a way to merge hand-curated contacts with discovered candidates.
+- Reusable sender identities for Nitu's personal outreach and each Rutgers organization, with distinct signatures,
+  biographies, links, and default asks.
+
+### Follow-ups and inbox awareness
+
+- General multi-step follow-up sequences. The MVP supports only a recorded speaker-invitation follow-up.
+- Scheduled reminders, quiet hours, rate limits, and a review queue for follow-ups that are due.
+- Gmail thread and reply synchronization so a sequence can stop when someone responds. This requires additional OAuth
+  scope and a deliberate privacy review; the current `gmail.compose` scope does not read the inbox.
+- Outcome tracking such as replied, meeting booked, declined, bounced, or no response.
+
+### Deeper automation
+
+- Optional, explicitly approved sending or scheduled sending. HERMES currently creates drafts only.
+- Calendar integration for proposing times, creating events, and attaching event details after a recipient agrees.
+- Reusable and user-editable email templates, tone presets, and organization-specific invitation packages in the UI.
+- Attachments and reusable supporting material such as resumes, club decks, event briefs, or speaker one-pagers.
+- Rules for campaign-wide actions such as "research the next ten," "draft only verified contacts," or "prepare
+  follow-ups for everyone who has not replied."
+
+### Better discovery and research
+
+- A richer conversational intake and clarification step. Intake extraction is deterministic and intentionally narrow
+  today, so unusual requests may need manual field correction.
+- Ranking controls with visible scoring, saved filters, comparison views, and explanations for why one candidate ranks
+  above another.
+- Broader source handling for PDFs, publications, conference pages, and other document types. The MVP fetcher focuses
+  on small public HTML/text pages and limits itself to two pages per person.
+- User-assisted correction of identities, sources, and contact details, with corrections remembered across campaigns.
+
+### Analytics and operations
+
+- A dashboard for campaign throughput, research success, verified-contact rate, draft approval rate, replies, and
+  outcomes. Current metrics focus on API usage, cache hits, and job progress.
+- Notifications for completed research, failed jobs, drafts ready for review, and follow-ups due.
+- Dependency locking, automated CI, browser-level UI coverage, migration tooling, structured operational logs, backup,
+  and restore procedures.
+- Multi-user authentication and remote deployment. The current security model is intentionally single-user and local.
+
+The next highest-value milestone is **contact memory + reply-aware follow-ups**. Together, those turn HERMES from a
+campaign drafting tool into a system that can manage ongoing relationships without repeatedly researching or messaging
+the same person.
 
 ## Architecture
 
