@@ -1,0 +1,4 @@
+# Fake credentials in test fixtures (commits before inline gitleaks:allow markers)
+a13ef5f94edc611cec039ea7949dac8b71251333:tests/test_logging.py:generic-api-key:13
+a13ef5f94edc611cec039ea7949dac8b71251333:tests/test_logging.py:generic-api-key:13
+bb7d125678392d8652b274b296476eaa5b3206ed:tests/test_remote.py:generic-api-key:15

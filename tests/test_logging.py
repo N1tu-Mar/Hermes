@@ -10,7 +10,7 @@ SECRET_KEY = "sk-proj-THISISAFAKEKEY1234567890abcdef"
 
 
 def test_redact_scrubs_sensitive_values():
-    text = (f'api_key={SECRET_KEY} {{"access_token": "ya29.a0AfH6SMBx", "refresh_token": "1//0gAbCdEfGhIjKlMn"}} '
+    text = (f'api_key={SECRET_KEY} {{"access_token": "ya29.a0AfH6SMBx", "refresh_token": "1//0gAbCdEfGhIjKlMn"}} '  # gitleaks:allow (fake fixture)
             "Authorization: Bearer abc.def.ghi mail avery.lin@demo.example.edu call +1 (732) 555-0199 "
             'body="Dear Dr. Lin, I loved your paper" session=Zm9vYmFyYmF6cXV4cXV1eHF1dXhxdXV4cXV1eA')
     out = logs.redact(text)

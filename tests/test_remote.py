@@ -12,7 +12,7 @@ from tests.support import BIO, idle, run_research_flow, wait
 
 URL = "https://hermes.test"
 PW = {"alice": "alice-password-123", "bob": "bob-password-4567"}
-ALICE_KEY = "sk-alice-0123456789abcdefghij"
+ALICE_KEY = "sk-alice-0123456789abcdefghij"  # gitleaks:allow (fake fixture)
 
 
 @pytest.fixture
