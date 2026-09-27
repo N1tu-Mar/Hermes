@@ -86,7 +86,7 @@ class CampaignStore:
             raise KeyError(campaign_id)
         doc = json.loads(path.read_text(encoding="utf-8"))
         if doc.get("schema_version") != SCHEMA_VERSION:
-            raise RuntimeError(f"{name} schema_version {doc.get('schema_version')}: explicit migration required")
+            raise RuntimeError(f"{name} schema_version {doc.get('schema_version')}: run `python -m app.ops migrate`")
         return doc
 
     def candidates(self, campaign_id):

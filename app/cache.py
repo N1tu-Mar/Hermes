@@ -3,13 +3,18 @@
 Tables: page cache (by URL), research cache (by candidate + criteria hash),
 drafts keyed by (campaign_id, candidate_id, template_version), jobs for
 resumable progress, usage counters, and recent events for the progress feed.
+Schema changes are appended to MIGRATIONS (see migrations.py); never edit an
+applied one.
 """
 import json
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 
-SCHEMA = """
+from .migrations import migrate_sqlite
+
+SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS pages (
   url TEXT PRIMARY KEY, fetched_at REAL, ok INTEGER, text TEXT, error TEXT);
 CREATE TABLE IF NOT EXISTS research_cache (
@@ -30,6 +35,9 @@ CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT, at REAL, message TEXT);
 """
 
+# Append only. V1 keeps IF NOT EXISTS because databases created before versioning already have those tables.
+MIGRATIONS = [SCHEMA_V1]
+
 PAGE_TTL = 7 * 86400
 PAGE_ERROR_TTL = 3600
 RESEARCH_TTL = 14 * 86400
@@ -41,8 +49,28 @@ class Cache:
         self.db = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.executescript(SCHEMA)
+        self.db.execute("PRAGMA secure_delete=ON")  # deleted personal data is overwritten, not left in free pages
+        self.path = path
+        migrate_sqlite(self.db, path, MIGRATIONS)
         self.lock = threading.Lock()
+
+    @contextmanager
+    def tx(self):
+        with self.lock:
+            self.db.execute("BEGIN")
+            try:
+                yield
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+            self.db.execute("COMMIT")
+
+    def close(self):
+        with self.lock:
+            self.db.close()
+
+    def ping(self):
+        return self.q("SELECT 1 AS ok")[0]["ok"] == 1
 
     def q(self, sql, args=()):
         with self.lock:
@@ -135,6 +163,41 @@ class Cache:
     def set_budget(self, campaign_id, budget):
         self.usage(campaign_id)
         self.x("UPDATE usage SET budget=? WHERE campaign_id=?", (int(budget), campaign_id))
+
+    # deletion / retention ----------------------------------------------
+    def delete_campaign(self, campaign_id):
+        with self.tx():
+            for table in ("drafts", "jobs", "usage", "events"):
+                self.db.execute(f"DELETE FROM {table} WHERE campaign_id=?", (campaign_id,))  # noqa: S608 fixed names
+            self.db.execute("DELETE FROM research_cache WHERE key LIKE ?", (campaign_id + ":%",))
+
+    def delete_candidate(self, campaign_id, candidate_id, name=None, urls=()):
+        """Remove every row derived from one person. Events are free text, so match their id or name."""
+        with self.tx():
+            for table in ("drafts", "jobs"):
+                self.db.execute(f"DELETE FROM {table} WHERE campaign_id=? AND candidate_id LIKE ?",  # noqa: S608
+                                (campaign_id, candidate_id + "%"))
+            self.db.execute("DELETE FROM research_cache WHERE key LIKE ?", (f"{campaign_id}:{candidate_id}:%",))
+            self.db.execute("DELETE FROM events WHERE campaign_id=? AND (message LIKE ? OR message LIKE ?)",
+                            (campaign_id, f"{candidate_id}:%", f"{name or candidate_id}:%"))
+            for url in urls:
+                self.db.execute("DELETE FROM pages WHERE url=?", (url,))
+
+    def purge(self, older_than_days):
+        """Retention: drop expired caches, and events/finished jobs older than the window. Returns row counts."""
+        now, cutoff = time.time(), time.time() - older_than_days * 86400
+        stmts = {
+            "pages": ("DELETE FROM pages WHERE fetched_at < ?", now - PAGE_TTL),
+            "research_cache": ("DELETE FROM research_cache WHERE created_at < ?", now - RESEARCH_TTL),
+            "events": ("DELETE FROM events WHERE at < ?", cutoff),
+            "jobs": ("DELETE FROM jobs WHERE updated_at < ? AND status NOT IN ('queued','running','interrupted')",
+                     cutoff),
+        }
+        out = {}
+        with self.tx():
+            for name, (sql, arg) in stmts.items():
+                out[name] = self.db.execute(sql, (arg,)).rowcount
+        return out
 
     def event(self, campaign_id, message):
         self.x("INSERT INTO events (campaign_id, at, message) VALUES (?,?,?)", (campaign_id, time.time(), message))

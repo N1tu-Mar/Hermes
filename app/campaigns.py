@@ -4,7 +4,10 @@ The only place that decides state transitions. HTTP and MCP both call this
 through the API routes; domain modules below it know nothing about either.
 """
 import asyncio
+import inspect
+import logging
 import re
+import shutil
 import time
 from datetime import datetime
 
@@ -12,6 +15,9 @@ from . import outlines, research, writer
 from .contracts import clean_intake, dedupe_key, normalize_url
 from .jobs import Coordinator
 from .openai_client import BudgetExceeded, ModelError
+
+
+log = logging.getLogger("campaigns")
 
 
 class Rejected(Exception):
@@ -96,8 +102,21 @@ class CampaignService:
             try:
                 self.store.update_candidates(cid, unstick)
             except Exception:
-                pass
+                log.warning("could not reset candidate states", extra={"campaign_id": cid}, exc_info=True)
         self.jobs.start()
+
+    async def shutdown(self, grace=10.0):
+        """Drain/checkpoint jobs, then close provider clients and the database."""
+        await self.jobs.close(grace)
+        for obj in (getattr(self.model, "client", None), getattr(self.fetcher, "client", None),
+                    getattr(self.gmail, "svc", None)):
+            close = getattr(obj, "aclose", None) or getattr(obj, "close", None)
+            try:
+                if close and inspect.iscoroutine(res := close()):
+                    await res
+            except Exception:
+                log.warning("provider client did not close cleanly", exc_info=True)
+        self.cache.close()
 
     def create(self, intake, max_candidates=20, budget=60):
         intake = clean_intake(intake)
@@ -461,6 +480,51 @@ class CampaignService:
                 "usage": {k: u[k] for k in ("api_calls", "cache_hits", "input_tokens", "output_tokens", "budget")},
                 "stopped": campaign_id in self.jobs.stopped,
                 "recent": self.cache.events(campaign_id)}
+
+    # ---------------------------------------------------------------- deletion
+    def delete_campaign(self, campaign_id):
+        """Remove a campaign's files and every SQLite row derived from it. Gmail drafts stay in Gmail."""
+        self._require(campaign_id)
+        if self._active_any(campaign_id):
+            raise Rejected("stop the campaign and wait for running jobs before deleting it")
+        self.jobs.stopped.discard(campaign_id)
+        with self.store.lock(campaign_id):
+            shutil.rmtree(self.store.dir(campaign_id))
+        self.cache.delete_campaign(campaign_id)
+        log.info("campaign deleted", extra={"campaign_id": campaign_id})
+        return {"deleted": campaign_id}
+
+    def delete_candidate(self, campaign_id, cand_id):
+        """Forget one person: candidate record, research profile, drafts, cached research/pages, activity lines."""
+        self._require(campaign_id)
+        if any(j["candidate_id"] and j["candidate_id"].partition("#")[0] == cand_id for j in self._active_any(campaign_id)):
+            raise Rejected("a job for this person is still running; stop it first")
+        cands = self.store.candidates(campaign_id)["candidates"]
+        cand = next((c for c in cands if c["candidate_id"] == cand_id), None)
+        if not cand:
+            raise KeyError(cand_id)
+        profile = self.store.research(campaign_id)["profiles"].get(cand_id) or {}
+        urls = {cand.get("profile_url"), cand.get("discovery_source_url"), profile.get("contact_source_url"),
+                *(e.get("source_url") for e in profile.get("evidence") or [])} - {None}
+        self.store.update_research(campaign_id, lambda d: d["profiles"].pop(cand_id, None))
+        self.store.update_candidates(campaign_id, lambda d: d.__setitem__(
+            "candidates", [c for c in d["candidates"] if c["candidate_id"] != cand_id]))
+        self.cache.delete_candidate(campaign_id, cand_id, cand.get("name"), urls)
+        log.info("candidate deleted", extra={"campaign_id": campaign_id})
+        return {"deleted": cand_id}
+
+    def _active_any(self, campaign_id):
+        return [j for j in self.cache.jobs(campaign_id) if j["status"] in ("queued", "running")]
+
+    def diagnostics(self):
+        """Operational state only: counts, versions, booleans. No secrets, no personal data."""
+        jobs = {}
+        for j in self.cache.jobs():
+            jobs[j["status"]] = jobs.get(j["status"], 0) + 1
+        return {"demo": getattr(self.model, "demo", False), "model": self.model.model,
+                "gmail_connected": self.gmail is not None, "campaigns": len(self.store.list_ids()),
+                "jobs": jobs, "queue_depths": self.jobs.depths(), "workers_alive": self.jobs.alive(),
+                "running_jobs": self.jobs.running}
 
     # ---------------------------------------------------------------- control
     def stop(self, campaign_id):

@@ -15,9 +15,9 @@ from .research import Fetcher
 BASE = "http://127.0.0.1:8765/demo/pages"
 
 
-def set_base(port):
+def set_base(origin):
     global BASE
-    BASE = f"http://127.0.0.1:{port}/demo/pages"
+    BASE = f"{origin}/demo/pages"
 
 
 # slug, name, org, role, interests, facts, email (None = not published), reachable

@@ -4,6 +4,7 @@ Each draft carries an X-Outreach-Key header so a retry after a timeout can
 reconcile against existing drafts instead of creating a duplicate.
 """
 import base64
+import json
 import os
 from email.message import EmailMessage
 from pathlib import Path
@@ -55,6 +56,18 @@ class GmailDrafts:
         os.chmod(token_path, 0o600)
         return cls(build("gmail", "v1", credentials=creds, cache_discovery=False))
 
+    @classmethod
+    def from_token_json(cls, text):
+        """Remote mode: build from a user's stored (decrypted) OAuth token instead of a token file."""
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
+        creds = Credentials.from_authorized_user_info(json.loads(text), SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        return cls(build("gmail", "v1", credentials=creds, cache_discovery=False))
+
     def create(self, to, subject, body, key):
         res = self.svc.users().drafts().create(userId="me", body=build_message(to, subject, body, key)).execute()
         return res["id"]
@@ -75,6 +88,13 @@ class GmailDrafts:
             if any(h.get("name") == "X-Outreach-Key" and h.get("value") == key for h in headers):
                 return d["id"]
         return None
+
+
+def web_flow(redirect_uri):
+    """Remote mode OAuth (web application client). The desktop flow above only works on the local machine."""
+    from google_auth_oauthlib.flow import Flow
+
+    return Flow.from_client_secrets_file(str(credentials_paths()[0]), SCOPES, redirect_uri=redirect_uri)
 
 
 if __name__ == "__main__":
