@@ -90,14 +90,10 @@ def create_app(service=None, token=None):
         if request.url.path.startswith("/api/") and not secrets.compare_digest(
                 request.headers.get("x-app-token", ""), state.get("token", "")):
             return JSONResponse({"detail": "missing or bad app token"}, 401)
-        try:
-            return await call_next(request)
-        except KeyError as e:
-            return JSONResponse({"detail": f"not found: {e}"}, 404)
-        except Rejected as e:
-            return JSONResponse({"detail": str(e)}, 409)
-        except ValueError as e:
-            return JSONResponse({"detail": str(e)}, 400)
+        return await call_next(request)
+
+    for exc, code in ((KeyError, 404), (Rejected, 409), (ValueError, 400)):
+        app.add_exception_handler(exc, lambda r, e, code=code: JSONResponse({"detail": str(e).strip("'")}, code))
 
     @app.get("/", response_class=HTMLResponse)
     def index():
