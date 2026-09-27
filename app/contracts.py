@@ -13,7 +13,7 @@ SUBTYPES = {None, "startup", "research_professor", "speaker_mentor"}
 INTAKE_FIELDS = (
     "mode", "subtype", "raw_request", "organizations", "locations",
     "research_areas", "industries", "work_style", "other_criteria",
-    "outreach_goal", "event_details", "sender_background", "source_urls",
+    "outreach_goal", "event_details", "sender_background", "sender_identity_id", "source_urls",
 )
 LIST_FIELDS = {"organizations", "locations", "research_areas", "industries", "source_urls"}
 

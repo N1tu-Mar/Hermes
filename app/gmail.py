@@ -17,10 +17,12 @@ def credentials_paths():
     return cred, token
 
 
-def build_message(to, subject, body, key, attachments=None):
+def build_message(to, subject, body, key, reply_to=None, attachments=None):
     msg = EmailMessage()
     if to:
         msg["To"] = to
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg["Subject"] = subject
     msg["X-Outreach-Key"] = key
     msg.set_content(body)
@@ -60,9 +62,9 @@ class GmailDrafts:
         os.chmod(token_path, 0o600)
         return cls(build("gmail", "v1", credentials=creds, cache_discovery=False))
 
-    def create(self, to, subject, body, key, attachments=None):
+    def create(self, to, subject, body, key, reply_to=None, attachments=None):
         res = self.svc.users().drafts().create(
-            userId="me", body=build_message(to, subject, body, key, attachments)).execute()
+            userId="me", body=build_message(to, subject, body, key, reply_to, attachments)).execute()
         return res["id"]
 
     def exists(self, draft_id):

@@ -1,16 +1,20 @@
-"""SQLite cache/index plus durable reusable messaging workspace.
+"""SQLite: internal cache/index plus global cross-campaign memory.
 
-Tables: page cache (by URL), research cache (by candidate + criteria hash),
-drafts keyed by (campaign_id, candidate_id, template_version), jobs for
-resumable progress, usage counters, recent events, template versions, content,
-attachment metadata, contact policy, and campaign-rule audit records.
+Never a substitute for the campaign JSON files. Migration 1 is the cache:
+page cache (by URL), research cache (by candidate + criteria hash), drafts
+keyed by (campaign_id, candidate_id, template_version), jobs for resumable
+progress, usage counters, and recent events for the progress feed. Migration 2
+is the global ledger (people, links, reviews, interactions, identities,
+campaign metadata; see ledger.py). Schema changes are appended to MIGRATIONS
+and tracked with PRAGMA user_version; never edit an applied migration. It also
+stores reusable messaging assets, analytics, corrections, and policy rules.
 """
 import json
 import sqlite3
 import threading
 import time
 
-SCHEMA = """
+SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS pages (
   url TEXT PRIMARY KEY, fetched_at REAL, ok INTEGER, text TEXT, error TEXT);
 CREATE TABLE IF NOT EXISTS research_cache (
@@ -93,6 +97,54 @@ CREATE TABLE IF NOT EXISTS notifications (
 """
 USAGE_LOGGED = ("api_calls", "cache_hits", "input_tokens", "output_tokens")
 
+SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS people (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, organization TEXT, role TEXT,
+  email TEXT, profile_url TEXT, name_key TEXT NOT NULL,
+  notes TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '[]',
+  relationship TEXT NOT NULL DEFAULT 'new', do_not_contact INTEGER NOT NULL DEFAULT 0, dnc_reason TEXT,
+  last_contacted_at REAL, owner TEXT, source TEXT, created_at REAL, updated_at REAL);
+CREATE UNIQUE INDEX IF NOT EXISTS people_email ON people(email) WHERE email IS NOT NULL;
+CREATE INDEX IF NOT EXISTS people_url ON people(profile_url);
+CREATE INDEX IF NOT EXISTS people_name_key ON people(name_key);
+CREATE TABLE IF NOT EXISTS person_links (
+  campaign_id TEXT, candidate_id TEXT, contact_id INTEGER NOT NULL REFERENCES people(id),
+  linked_at REAL, PRIMARY KEY (campaign_id, candidate_id));
+CREATE INDEX IF NOT EXISTS person_links_contact ON person_links(contact_id);
+CREATE TABLE IF NOT EXISTS person_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT, candidate_id TEXT,
+  person TEXT NOT NULL, options TEXT NOT NULL, reason TEXT, status TEXT NOT NULL DEFAULT 'open',
+  resolved_contact_id INTEGER, created_at REAL, resolved_at REAL);
+CREATE TABLE IF NOT EXISTS interactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL REFERENCES people(id),
+  campaign_id TEXT, candidate_id TEXT, kind TEXT NOT NULL, detail TEXT, meta TEXT, at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS interactions_contact ON interactions(contact_id, at);
+CREATE TABLE IF NOT EXISTS identities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, display_name TEXT NOT NULL, biography TEXT NOT NULL,
+  organization TEXT, role TEXT, signature TEXT, links TEXT NOT NULL DEFAULT '[]', default_ask TEXT,
+  reply_to TEXT, created_at REAL, updated_at REAL);
+CREATE TABLE IF NOT EXISTS campaign_meta (
+  campaign_id TEXT PRIMARY KEY, name TEXT, archived INTEGER NOT NULL DEFAULT 0, updated_at REAL);
+"""
+
+# Append only; entry i is applied when PRAGMA user_version <= i.
+# V1 keeps IF NOT EXISTS because databases created before versioning already have those tables.
+MIGRATIONS = [SCHEMA_V1, SCHEMA_V2]
+
+
+def migrate(db):
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if version > len(MIGRATIONS):
+        raise RuntimeError(f"database schema v{version} is newer than this app (v{len(MIGRATIONS)})")
+    for i in range(version, len(MIGRATIONS)):
+        try:
+            db.executescript(f"BEGIN;\n{MIGRATIONS[i]}\nPRAGMA user_version={i + 1};\nCOMMIT;")
+        except Exception:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            raise
+
+
 PAGE_TTL = 7 * 86400
 PAGE_ERROR_TTL = 3600
 RESEARCH_TTL = 14 * 86400
@@ -104,7 +156,7 @@ class Cache:
         self.db = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.executescript(SCHEMA)
+        migrate(self.db)
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(usage)")}
         for name in ("pages_fetched", "bytes_fetched", "pages_skipped"):
             if name not in cols:

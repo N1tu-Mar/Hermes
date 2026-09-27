@@ -12,6 +12,11 @@
 <header class="bar">
   <a class="brand" href="#" data-go="home">Outreach Desk</a>
   <span id="mode-badge" class="badge" hidden></span>
+  <nav class="nav" aria-label="Sections">
+    <a href="#" data-go="campaigns">Campaigns</a>
+    <a href="#" data-go="contacts">Contacts <span id="review-count" class="count" hidden></span></a>
+    <a href="#" data-go="identities">Identities</a>
+  </nav>
   <button id="btn-library" class="top-link">Messaging library</button>
   <button id="btn-analytics" class="top-link">Analytics</button>
   <button id="btn-bell" class="top-link" aria-expanded="false" aria-controls="notif-panel">Notifications
@@ -87,7 +92,10 @@
         <label>Other criteria<input name="other_criteria"></label>
         <label>Your ask<input name="outreach_goal" placeholder="e.g. whether you have room for an undergraduate researcher"></label>
         <label data-for="speaker_mentor">Event details <small>organization, format, timing, remote option</small><input name="event_details"></label>
-        <label>Your background <small>used in every email; required before drafting</small>
+        <label>Send as <small>biography, signature, default ask, and reply-to come from the identity</small>
+          <select name="sender_identity_id"><option value="">Custom background (below)</option></select></label>
+        <p class="note" id="identity-hint">No identities yet. <a href="#" data-go="identities">Create one</a> to reuse your background across campaigns.</p>
+        <label data-when="custom">Custom background <small>only used when no identity is selected; required before drafting</small>
           <textarea name="sender_background" rows="3" placeholder="I'm Nitu, a Rutgers student studying … and on the executive board of …"></textarea></label>
         <div class="row">
           <label>Max people<input name="max_candidates" type="number" min="1" max="100" value="20"></label>
@@ -110,6 +118,8 @@
         <h2 id="work-title"></h2>
       </div>
       <div class="controls">
+        <button id="btn-import-cands" class="ghost">Import CSV</button>
+        <button id="btn-export-csv" class="ghost">Export CSV</button>
         <button id="btn-discover" class="ghost">Find more people</button>
         <button id="btn-stop" class="ghost">Stop</button>
         <button id="btn-resume" class="ghost">Resume</button>
@@ -117,6 +127,8 @@
       </div>
     </div>
 
+    <p id="archived-banner" class="banner warn" hidden>This campaign is archived. Unarchive it on the Campaigns page to keep working.</p>
+    <div id="cand-import" class="panel" hidden></div>
     <div id="progress" class="progress" aria-live="polite"></div>
 
     <details class="workspace-tools">
@@ -241,6 +253,87 @@
     <div class="an-grid">
       <section class="panel"><h3>Failures</h3><ol id="an-failures" class="feed"></ol></section>
       <section class="panel"><h3>Recent activity</h3><ol id="an-activity" class="feed"></ol></section>
+    </div>
+  </section>
+
+  <!-- 4. Campaign list -->
+  <section id="view-campaigns" class="view" hidden>
+    <div class="work-head">
+      <div><div class="eyebrow">All campaigns</div><h2>Campaigns</h2></div>
+      <div class="controls"><button class="primary" data-go="home">New campaign</button></div>
+    </div>
+    <form id="campaign-filters" class="filters" role="search">
+      <label>Search<input name="q" type="search" placeholder="Name, request, organization, topic"></label>
+      <label>Show<select name="status"><option value="active">Active</option><option value="archived">Archived</option><option value="all">All</option></select></label>
+      <label>Reaching<select name="subtype"><option value="">Anyone</option><option value="research_professor">Research professors</option>
+        <option value="startup">Startups</option><option value="speaker_mentor">Speakers or mentors</option></select></label>
+    </form>
+    <div class="table-wrap">
+      <table class="people list">
+        <thead><tr><th>Name</th><th>Reaching</th><th>People</th><th>Created</th><th>Actions</th></tr></thead>
+        <tbody id="campaign-rows"></tbody>
+      </table>
+    </div>
+    <p class="note">Archive is the safe default. Only archived campaigns can be deleted, and deletion asks you to confirm.
+      Duplicating copies the request, limits, budget, and sender identity; never people, research, drafts, or Gmail drafts.</p>
+  </section>
+
+  <!-- 5. Contacts -->
+  <section id="view-contacts" class="view" hidden>
+    <div class="work-head">
+      <div><div class="eyebrow">Everyone across every campaign</div><h2>Contacts</h2></div>
+      <div class="controls">
+        <button id="btn-new-contact" class="ghost">Add contact</button>
+        <button id="btn-import-contacts" class="ghost">Import CSV</button>
+        <button id="btn-export-contacts" class="ghost">Export CSV</button>
+      </div>
+    </div>
+    <div id="reviews" class="panel" hidden></div>
+    <div id="contact-import" class="panel" hidden></div>
+    <form id="contact-filters" class="filters" role="search">
+      <label>Search<input name="q" type="search" placeholder="Name, organization, email, notes"></label>
+      <label>Tag<input name="tag" placeholder="e.g. mentor"></label>
+      <label>Relationship<select name="relationship"><option value="">Any</option></select></label>
+      <label>Do not contact<select name="dnc"><option value="">Either</option><option value="yes">Only flagged</option><option value="no">Hide flagged</option></select></label>
+    </form>
+    <div class="work-grid">
+      <div class="table-wrap">
+        <table class="people">
+          <thead><tr><th>Person</th><th>Relationship</th><th>Campaigns</th><th>Tags</th></tr></thead>
+          <tbody id="contact-rows"></tbody>
+        </table>
+      </div>
+      <aside id="contact-detail" class="detail" aria-live="polite"><p class="empty">Pick a contact to see notes and history.</p></aside>
+    </div>
+  </section>
+
+  <!-- 6. Sender identities -->
+  <section id="view-identities" class="view" hidden>
+    <div class="work-head"><div><div class="eyebrow">Who emails are from</div><h2>Sender identities</h2></div></div>
+    <div class="work-grid">
+      <div id="identity-list" class="cards"></div>
+      <form id="identity-form" class="fields">
+        <h3 id="identity-form-title">New identity</h3>
+        <p id="identity-migrate" class="note" hidden>Prefilled with the background this browser saved before identities existed.</p>
+        <input type="hidden" name="id">
+        <div class="row">
+          <label>Display name<input name="display_name" required placeholder="Nitu, or Rutgers Entrepreneur Society"></label>
+          <label>Reply-to <small>optional</small><input name="reply_to" type="email" placeholder="club@example.com"></label>
+        </div>
+        <div class="row">
+          <label>Organization<input name="organization"></label>
+          <label>Role<input name="role" placeholder="President, Student, …"></label>
+        </div>
+        <label>Biography <small>the sender context given to the writer in every email</small>
+          <textarea name="biography" rows="4" required></textarea></label>
+        <label>Signature <small>appended to every draft</small><textarea name="signature" rows="3"></textarea></label>
+        <label>Links <small>comma separated</small><input name="links" placeholder="https://…"></label>
+        <label>Default ask <small>used when a campaign leaves "Your ask" empty</small><input name="default_ask"></label>
+        <div class="actions">
+          <button type="button" class="ghost" id="identity-reset">Clear</button>
+          <button type="submit" class="primary">Save identity</button>
+        </div>
+      </form>
     </div>
   </section>
 </main>
