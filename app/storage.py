@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,3 +114,10 @@ class CampaignStore:
     def validate(self, campaign_id):
         with self.lock(campaign_id):
             return validate_files(self.candidates(campaign_id), self.research(campaign_id))
+
+    def delete(self, campaign_id):
+        """Remove both JSON files and the campaign folder. Callers enforce archive + confirmation."""
+        with self.lock(campaign_id):
+            shutil.rmtree(self.dir(campaign_id))
+        with self._locks_guard:
+            self._locks.pop(campaign_id, None)

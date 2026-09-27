@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import demo
@@ -116,18 +116,102 @@ def create_app(service=None, token=None):
         intake, missing = parse_request(body.get("text", ""), body.get("mode"), body.get("subtype"))
         return {"intake": intake, "question": missing}
 
+    def csv_response(text, filename):
+        return Response(text, media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
     @app.get("/api/campaigns")
-    def list_campaigns():
-        return svc().list()
+    def list_campaigns(q: str = "", status: str = "active", subtype: str = ""):
+        return svc().list(q, status, subtype or None)
 
     @app.post("/api/campaigns")
     def create(body: dict = Body(...)):
-        cid = svc().create(body.get("intake") or {}, body.get("max_candidates", 20), body.get("budget", 60))
+        cid = svc().create(body.get("intake") or {}, body.get("max_candidates", 20), body.get("budget", 60), body.get("name"))
         return {"campaign_id": cid}
 
     @app.get("/api/campaigns/{cid}")
     def get(cid: str):
         return svc().get(cid)
+
+    @app.patch("/api/campaigns/{cid}")
+    def patch_campaign(cid: str, body: dict = Body(...)):
+        if "name" in body:
+            svc().rename(cid, body["name"])
+        if "archived" in body:
+            svc().archive(cid, bool(body["archived"]))
+        return svc().ledger.campaign_meta(cid)
+
+    @app.post("/api/campaigns/{cid}/duplicate")
+    def duplicate(cid: str, body: dict = Body(default={})):
+        return {"campaign_id": svc().duplicate(cid, body.get("name"))}
+
+    @app.post("/api/campaigns/{cid}/delete")
+    def delete(cid: str, body: dict = Body(default={})):
+        return svc().delete(cid, body.get("confirm"))
+
+    @app.get("/api/campaigns/{cid}/export.csv")
+    def export_campaign_csv(cid: str):
+        return csv_response(svc().export_campaign_csv(cid), f"{cid}-candidates.csv")
+
+    @app.post("/api/campaigns/{cid}/import")
+    def import_candidates(cid: str, body: dict = Body(...)):
+        return svc().import_csv("candidates", body.get("csv", ""), cid, bool(body.get("commit")))
+
+    # contacts --------------------------------------------------------------
+    @app.get("/api/contacts")
+    def list_contacts(q: str = "", tag: str = "", dnc: str = "", relationship: str = ""):
+        return svc().ledger.contacts(q or None, tag or None, {"yes": True, "no": False}.get(dnc), relationship or None)
+
+    @app.post("/api/contacts")
+    def create_contact(body: dict = Body(...)):
+        cid, result = svc().ledger.upsert_person(body, source=body.get("source") or "manual")
+        return {"contact_id": cid, "result": result}
+
+    @app.get("/api/contacts/export.csv")
+    def export_contacts_csv():
+        return csv_response(svc().export_contacts_csv(), "hermes-contacts.csv")
+
+    @app.post("/api/contacts/import")
+    def import_contacts(body: dict = Body(...)):
+        return svc().import_csv("contacts", body.get("csv", ""), commit=bool(body.get("commit")))
+
+    @app.get("/api/contacts/{contact_id}")
+    def get_contact(contact_id: int):
+        return svc().ledger.contact_detail(contact_id)
+
+    @app.patch("/api/contacts/{contact_id}")
+    def patch_contact(contact_id: int, body: dict = Body(...)):
+        svc().ledger.update_contact(contact_id, body)
+        return svc().ledger.contact_detail(contact_id)
+
+    @app.post("/api/contacts/{contact_id}/interactions")
+    def add_interaction(contact_id: int, body: dict = Body(...)):
+        return svc().log_interaction(contact_id, body.get("kind"), str(body.get("detail") or ""), body.get("at"))
+
+    @app.get("/api/contact-reviews")
+    def contact_reviews():
+        return svc().ledger.reviews()
+
+    @app.post("/api/contact-reviews/{review_id}/resolve")
+    def resolve_review(review_id: int, body: dict = Body(default={})):
+        return svc().ledger.resolve_review(review_id, body.get("contact_id"))
+
+    # sender identities ----------------------------------------------------
+    @app.get("/api/identities")
+    def list_identities():
+        return svc().ledger.identities()
+
+    @app.post("/api/identities")
+    def create_identity(body: dict = Body(...)):
+        return svc().ledger.identity(svc().ledger.create_identity(body))
+
+    @app.patch("/api/identities/{identity_id}")
+    def patch_identity(identity_id: int, body: dict = Body(...)):
+        return svc().ledger.update_identity(identity_id, body)
+
+    @app.delete("/api/identities/{identity_id}")
+    def delete_identity(identity_id: int):
+        return svc().delete_identity(identity_id)
 
     @app.patch("/api/campaigns/{cid}/intake")
     def patch_intake(cid: str, body: dict = Body(...)):

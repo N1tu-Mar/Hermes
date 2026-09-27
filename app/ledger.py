@@ -245,6 +245,16 @@ class Ledger:
                         (campaign_id, candidate_id))
         return rows[0]["contact_id"] if rows else None
 
+    def campaign_contacts(self, campaign_id):
+        """candidate_id -> linked contact summary, plus ids waiting on a review."""
+        rows = self.c.q("""SELECT l.candidate_id, p.id, p.do_not_contact, p.relationship, p.tags FROM person_links l
+                           JOIN people p ON p.id=l.contact_id WHERE l.campaign_id=?""", (campaign_id,))
+        linked = {r["candidate_id"]: {"contact_id": r["id"], "do_not_contact": bool(r["do_not_contact"]),
+                                      "relationship": r["relationship"], "tags": json.loads(r["tags"])} for r in rows}
+        review = {r["candidate_id"] for r in self.c.q(
+            "SELECT candidate_id FROM person_reviews WHERE status='open' AND campaign_id=?", (campaign_id,))}
+        return linked, review
+
     def _link(self, campaign_id, candidate_id, contact_id):
         self.c.x("INSERT OR REPLACE INTO person_links VALUES (?,?,?,?)", (campaign_id, candidate_id, contact_id, time.time()))
 
@@ -303,8 +313,12 @@ class Ledger:
             return cid, "matched"
 
     # ------------------------------------------------------------ reviews
-    def reviews(self, status="open"):
-        rows = self.c.q("SELECT * FROM person_reviews WHERE status=? ORDER BY created_at", (status,))
+    def reviews(self, status="open", campaign_id=None, candidate_id=None):
+        sql, args = "SELECT * FROM person_reviews WHERE status=?", [status]
+        if campaign_id:
+            sql += " AND campaign_id=? AND candidate_id=?"
+            args += [campaign_id, candidate_id]
+        rows = self.c.q(sql + " ORDER BY created_at", args)
         for r in rows:
             r["person"], r["options"] = json.loads(r["person"]), json.loads(r["options"])
             r["option_contacts"] = [self.c.q("SELECT id, name, organization, email, profile_url, do_not_contact "
