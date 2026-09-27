@@ -287,3 +287,20 @@ def test_existing_campaigns_backfilled_and_keep_approvals(tmp_path):
             == "avery.lin@demo.example.edu"
         res = client.post(f"/api/campaigns/{cid}/gmail-drafts", json={"candidate_ids": [first]}).json()["results"]
         assert res[0]["result"].startswith("gmail not connected")  # approval still valid, not "inputs changed"
+
+
+def test_mcp_tools_go_through_the_api(tmp_path, monkeypatch):
+    from app import mcp_server
+    client, svc = boot(tmp_path / "data")
+    with client:
+        monkeypatch.setattr(mcp_server.httpx, "request", lambda method, url, json=None, params=None, **kw:
+                            client.request(method, url.replace(mcp_server.BASE, "/api"), json=json, params=params))
+        prev = mcp_server.import_csv(MIXED_CSV)
+        assert len(prev["valid"]) == 2 and mcp_server.search_contacts()["contacts"] == []
+        mcp_server.import_csv(MIXED_CSV, commit=True)
+        ada = mcp_server.search_contacts("Ada")["contacts"][0]
+        mcp_server.update_contact(ada["id"], do_not_contact=True, dnc_reason="test")
+        assert mcp_server.search_contacts(do_not_contact="yes")["contacts"][0]["name"] in ("Ada Park", "Dee Roy")
+        assert mcp_server.log_interaction(ada["id"], "meeting", "Coffee")["contact"]["relationship"] == "meeting"
+        assert "error" in mcp_server.log_interaction(ada["id"], "gmail_draft")
+        assert "Ada Park" in mcp_server.export_csv()["text"]
