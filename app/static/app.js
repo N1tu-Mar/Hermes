@@ -229,7 +229,7 @@ async function renderDetail(id) {
       <ol class="claims">${p.evidence.map((e, i) => `<li><a class="cite" href="${esc(safeUrl(e.source_url) || "#")}" target="_blank" rel="noopener noreferrer" aria-label="Source ${i + 1}">e${i}</a>
         <span>${esc(e.claim)}<span class="src">${esc(e.source_url)} · ${esc(e.retrieved_at)}</span></span></li>`).join("") || "<li class='needs'>No sourced claims. This person can't be personalized yet.</li>"}</ol>
       ${p.notes?.dropped_unsourced_claims ? `<p class="note">${p.notes.dropped_unsourced_claims} unsourced claim(s) discarded.</p>` : ""}
-      <button class="small ghost" data-act="refresh">Refresh research</button></section>`;
+      <button class="small ghost" data-act="refresh">${p.status === "research_failed" ? "Retry research" : "Refresh research"}</button></section>`;
   }
   if (d) {
     const locked = d.status === "gmail_draft_created" || d.status === "blocked";
