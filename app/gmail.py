@@ -3,6 +3,7 @@
 Each draft carries an X-Outreach-Key header so a retry after a timeout can
 reconcile against existing drafts instead of creating a duplicate.
 """
+
 import base64
 import json
 import os
@@ -40,6 +41,7 @@ class GmailDrafts:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
+
         cred_path, token_path = credentials_paths()
         creds = None
         if token_path.exists():
@@ -50,6 +52,7 @@ class GmailDrafts:
             if not (interactive and cred_path.exists()):
                 return None
             from google_auth_oauthlib.flow import InstalledAppFlow
+
             creds = InstalledAppFlow.from_client_secrets_file(str(cred_path), SCOPES).run_local_server(port=0)
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json())

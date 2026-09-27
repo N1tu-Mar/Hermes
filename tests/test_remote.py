@@ -1,4 +1,5 @@
 """Remote mode: accounts, sessions, CSRF, HTTPS, and strict per-user isolation."""
+
 import sqlite3
 
 import pytest
@@ -19,8 +20,13 @@ ALICE_KEY = "sk-alice-0123456789abcdefghij"  # gitleaks:allow (fake fixture)
 def remote(tmp_path, monkeypatch):
     token_file = tmp_path / "app_token"
     monkeypatch.setattr(api, "TOKEN_FILE", token_file)
-    cfg = Config(mode="remote", data_root=tmp_path / "data", public_url=URL, secret_key=Fernet.generate_key().decode(),
-                 shutdown_grace=0.5)
+    cfg = Config(
+        mode="remote",
+        data_root=tmp_path / "data",
+        public_url=URL,
+        secret_key=Fernet.generate_key().decode(),
+        shutdown_grace=0.5,
+    )
     cfg.data_root.mkdir()
     acc = Accounts(cfg.data_root, cfg.secret_key)
     for name, pw in PW.items():
@@ -38,8 +44,10 @@ class As:
         r = client.post("/auth/login", json={"username": name, "password": PW[name]})
         assert r.status_code == 200, r.text
         self.client = client
-        self.headers = {"x-csrf-token": r.json()["csrf"],
-                        "cookie": f"{api.SESSION_COOKIE}={client.cookies[api.SESSION_COOKIE]}"}
+        self.headers = {
+            "x-csrf-token": r.json()["csrf"],
+            "cookie": f"{api.SESSION_COOKIE}={client.cookies[api.SESSION_COOKIE]}",
+        }
         client.cookies.clear()
 
     def request(self, method, url, headers=None, **kw):
@@ -54,7 +62,9 @@ def login(anon, name):
 
 
 def campaign(c):
-    parsed = c.post("/api/parse", json={"text": "Rutgers/Princeton professors working on computational neurodevelopment"}).json()
+    parsed = c.post(
+        "/api/parse", json={"text": "Rutgers/Princeton professors working on computational neurodevelopment"}
+    ).json()
     body = {"intake": {**parsed["intake"], "sender_background": BIO}, "max_candidates": 20, "budget": 40}
     return c.post("/api/campaigns", json=body).json()["campaign_id"]
 
@@ -94,7 +104,10 @@ def test_csrf_origin_https_and_host(remote):
     assert http.get("/").status_code == 400  # HTTPS only
     assert http.get("/healthz").status_code == 200  # probes allowed from the proxy
     assert TestClient(app, base_url="https://evil.test").get("/").status_code == 403
-    assert anon.post("/auth/login", content="username=alice", headers={"content-type": "text/plain"}).status_code in (415, 422)
+    assert anon.post("/auth/login", content="username=alice", headers={"content-type": "text/plain"}).status_code in (
+        415,
+        422,
+    )
 
 
 def test_lockout_and_disabled_users(remote):
@@ -117,12 +130,26 @@ def test_users_are_isolated(remote):
     assert alice.post(f"/api/campaigns/{cid}/drafts/{ids[0]}/approve").status_code == 200
 
     # every campaign-scoped route: bob gets 404, never alice's data
-    routes = [("get", ""), ("get", "/progress"), ("get", "/validate"), ("get", "/export"),
-              ("get", f"/candidates/{ids[0]}"), ("patch", "/intake"), ("post", "/discover"), ("post", "/select"),
-              ("post", "/research"), ("post", "/drafts/generate"), ("patch", f"/drafts/{ids[0]}"),
-              ("post", f"/drafts/{ids[0]}/approve"), ("post", f"/drafts/{ids[0]}/mark-invited"),
-              ("post", "/gmail-drafts"), ("post", "/stop"), ("post", "/resume"),
-              ("delete", f"/candidates/{ids[0]}"), ("delete", "")]
+    routes = [
+        ("get", ""),
+        ("get", "/progress"),
+        ("get", "/validate"),
+        ("get", "/export"),
+        ("get", f"/candidates/{ids[0]}"),
+        ("patch", "/intake"),
+        ("post", "/discover"),
+        ("post", "/select"),
+        ("post", "/research"),
+        ("post", "/drafts/generate"),
+        ("patch", f"/drafts/{ids[0]}"),
+        ("post", f"/drafts/{ids[0]}/approve"),
+        ("post", f"/drafts/{ids[0]}/mark-invited"),
+        ("post", "/gmail-drafts"),
+        ("post", "/stop"),
+        ("post", "/resume"),
+        ("delete", f"/candidates/{ids[0]}"),
+        ("delete", ""),
+    ]
     for method, suffix in routes:
         kw = {"json": {"candidate_ids": ids, "subject": "x", "body": "x"}} if method in ("post", "patch") else {}
         r = getattr(bob, method)(f"/api/campaigns/{cid}{suffix}", **kw)

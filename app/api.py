@@ -12,6 +12,7 @@ has a separate data root, SQLite database, job workers, and encrypted provider
 credentials, so a request can only ever reach its own user's service. The
 local app token is never read, written, or accepted in this mode.
 """
+
 import fcntl
 import logging
 import os
@@ -42,9 +43,11 @@ SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 SESSION_COOKIE = "__Host-hermes_session"
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 VERSION = "0.2.0"
-CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
-       "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
-       "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
+    "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+)
 
 log = logging.getLogger("api")
 
@@ -156,8 +159,10 @@ def create_app(service=None, token=None, config=None):
         needs_session = path.startswith("/api/") or path in ("/auth/logout", "/auth/gmail/start")
         if needs_session and not request.state.user:
             return JSONResponse({"detail": "login required"}, 401)
-        if unsafe and request.state.user and not secrets.compare_digest(
-            request.headers.get("x-csrf-token", ""), request.state.user["csrf"]
+        if (
+            unsafe
+            and request.state.user
+            and not secrets.compare_digest(request.headers.get("x-csrf-token", ""), request.state.user["csrf"])
         ):
             return JSONResponse({"detail": "missing or bad CSRF token"}, 403)
         return None
@@ -181,10 +186,16 @@ def create_app(service=None, token=None, config=None):
             h["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
         if not request.url.path.startswith(("/static/", "/healthz", "/readyz", "/demo/")):
             user = getattr(request.state, "user", None)
-            log.info("request", extra={"method": request.method, "path": request.url.path,
-                                       "status": response.status_code,
-                                       "duration_ms": int((time.monotonic() - started) * 1000),
-                                       **({"user_id": user["user_id"]} if user else {})})
+            log.info(
+                "request",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": response.status_code,
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                    **({"user_id": user["user_id"]} if user else {}),
+                },
+            )
         return response
 
     for exc, code in ((KeyError, 404), (Rejected, 409), (ValueError, 400)):
@@ -264,8 +275,7 @@ def create_app(service=None, token=None, config=None):
             return JSONResponse({"detail": "wrong username or password, or too many attempts"}, 401)
         tok, csrf, _ = res
         resp = JSONResponse({"mode": "remote", "user": body["username"], "csrf": csrf})
-        resp.set_cookie(SESSION_COOKIE, tok, httponly=True, secure=True, samesite="strict", path="/",
-                        max_age=7 * 86400)
+        resp.set_cookie(SESSION_COOKIE, tok, httponly=True, secure=True, samesite="strict", path="/", max_age=7 * 86400)
         return resp
 
     @app.post("/auth/logout")
@@ -283,9 +293,12 @@ def create_app(service=None, token=None, config=None):
     @app.get("/api/account")
     def account(request: Request, s: Svc):
         uid = _remote_user(request)
-        return {"user": request.state.user["username"], "gmail_connected": s.gmail is not None,
-                "openai_key_set": state["accounts"].get_secret(uid, "openai_api_key") is not None,
-                "demo": getattr(s.model, "demo", False)}
+        return {
+            "user": request.state.user["username"],
+            "gmail_connected": s.gmail is not None,
+            "openai_key_set": state["accounts"].get_secret(uid, "openai_api_key") is not None,
+            "demo": getattr(s.model, "demo", False),
+        }
 
     async def _reload_service(uid):
         old = state["services"].pop(uid, None)
@@ -358,10 +371,14 @@ def create_app(service=None, token=None, config=None):
 
     @app.get("/api/diagnostics")
     def diagnostics(s: Svc):
-        return {"version": VERSION, "mode": cfg.mode, "python": sys.version.split()[0],
-                "uptime_s": int(time.time() - state["started"]),
-                "schema": {"sqlite": len(cache_mod.MIGRATIONS), "json": contracts.SCHEMA_VERSION},
-                **s.diagnostics()}
+        return {
+            "version": VERSION,
+            "mode": cfg.mode,
+            "python": sys.version.split()[0],
+            "uptime_s": int(time.time() - state["started"]),
+            "schema": {"sqlite": len(cache_mod.MIGRATIONS), "json": contracts.SCHEMA_VERSION},
+            **s.diagnostics(),
+        }
 
     @app.post("/api/parse")
     def parse(body: dict = Body(...)):
@@ -462,9 +479,16 @@ def main():
         print(f"HERMES cannot start: {e}", file=sys.stderr)
         raise SystemExit(2) from None
     logs.setup(cfg.log_level)
-    uvicorn.run(create_app(config=cfg), host=cfg.host, port=cfg.port, log_config=None, access_log=False,
-                proxy_headers=cfg.remote, forwarded_allow_ips=cfg.trusted_proxies if cfg.remote else None,
-                server_header=False)
+    uvicorn.run(
+        create_app(config=cfg),
+        host=cfg.host,
+        port=cfg.port,
+        log_config=None,
+        access_log=False,
+        proxy_headers=cfg.remote,
+        forwarded_allow_ips=cfg.trusted_proxies if cfg.remote else None,
+        server_header=False,
+    )
 
 
 if __name__ == "__main__":

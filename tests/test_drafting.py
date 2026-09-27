@@ -21,9 +21,17 @@ def test_followup_blocked_without_recorded_invite():
 
 
 def test_draft_checks_flag_invented_details():
-    outline = {"evidence": [{"claim": "Studies infant attention."}], "sender_context": BIO, "event_details": None,
-               "earlier_invite": None, "ask": "a chat", "maximum_length": 150}
-    issues = check_draft("Hi", "As we discussed on March 3, see https://x.io and your 2019 paper.", outline, None, ["e0"])
+    outline = {
+        "evidence": [{"claim": "Studies infant attention."}],
+        "sender_context": BIO,
+        "event_details": None,
+        "earlier_invite": None,
+        "ask": "a chat",
+        "maximum_length": 150,
+    }
+    issues = check_draft(
+        "Hi", "As we discussed on March 3, see https://x.io and your 2019 paper.", outline, None, ["e0"]
+    )
     joined = " ".join(issues)
     assert "raw URL" in joined and "date" in joined and "year" in joined and "prior relationship" in joined
     assert check_draft("Hi", "I read that you study infant attention.", outline, None, ["e0"]) == []

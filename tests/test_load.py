@@ -1,5 +1,6 @@
 """Realistic campaign sizes under concurrency: 3 campaigns x 100 people researched and drafted at once,
 while other clients read and edit. Checks throughput, no lost JSON updates, and clean files."""
+
 import asyncio
 import threading
 import time
@@ -27,9 +28,17 @@ class FastModel(demo.DemoModel):
         self.cache.bump_usage(campaign_id, api_calls=1)
         url = user_input.split('"profile_url": "', 1)[1].split('"', 1)[0]
         name = user_input.split('"name": "', 1)[1].split('"', 1)[0]
-        return ({"contact_email": f"{url.rsplit('/', 1)[1]}@load.example.edu", "contact_source_url": url,
-                 "summary": "s", "research_interests": ["load"], "fit_reason": "fits",
-                 "evidence": [{"claim": f"{name} studies load testing.", "source_url": url}]}, {url})
+        return (
+            {
+                "contact_email": f"{url.rsplit('/', 1)[1]}@load.example.edu",
+                "contact_source_url": url,
+                "summary": "s",
+                "research_interests": ["load"],
+                "fit_reason": "fits",
+                "evidence": [{"claim": f"{name} studies load testing.", "source_url": url}],
+            },
+            {url},
+        )
 
 
 class FakeFetcher:
@@ -46,13 +55,28 @@ def test_hundreds_of_people_concurrently(tmp_path):
     with TestClient(create_app(service=svc, token="t"), headers={"x-app-token": "t"}) as client:
         cids = []
         for k in range(CAMPAIGNS):
-            intake = {"mode": "research", "subtype": "research_professor", "research_areas": ["load"],
-                      "sender_background": BIO, "outreach_goal": "a chat"}
-            cid = client.post("/api/campaigns", json={"intake": intake, "max_candidates": N, "budget": 1000}).json()["campaign_id"]
-            people = [{"candidate_id": f"c_{i:03d}", "name": f"Person{k} Load{i}", "organization": "Load U",
-                       "role": "Professor", "profile_url": f"https://load.example.edu/p{k}x{i}",
-                       "discovery_source_url": f"https://load.example.edu/p{k}x{i}", "status": "selected"}
-                      for i in range(1, N + 1)]
+            intake = {
+                "mode": "research",
+                "subtype": "research_professor",
+                "research_areas": ["load"],
+                "sender_background": BIO,
+                "outreach_goal": "a chat",
+            }
+            cid = client.post("/api/campaigns", json={"intake": intake, "max_candidates": N, "budget": 1000}).json()[
+                "campaign_id"
+            ]
+            people = [
+                {
+                    "candidate_id": f"c_{i:03d}",
+                    "name": f"Person{k} Load{i}",
+                    "organization": "Load U",
+                    "role": "Professor",
+                    "profile_url": f"https://load.example.edu/p{k}x{i}",
+                    "discovery_source_url": f"https://load.example.edu/p{k}x{i}",
+                    "status": "selected",
+                }
+                for i in range(1, N + 1)
+            ]
             store.update_candidates(cid, lambda d, people=people: d["candidates"].extend(people))
             cids.append(cid)
 
@@ -72,8 +96,9 @@ def test_hundreds_of_people_concurrently(tmp_path):
             t.start()
         started = time.monotonic()
         # all campaigns research at once, from parallel request threads
-        posts = [threading.Thread(target=lambda c=cid: client.post(f"/api/campaigns/{c}/research", json={}))
-                 for cid in cids]
+        posts = [
+            threading.Thread(target=lambda c=cid: client.post(f"/api/campaigns/{c}/research", json={})) for cid in cids
+        ]
         for t in posts:
             t.start()
         for t in posts:
@@ -98,6 +123,5 @@ def test_hundreds_of_people_concurrently(tmp_path):
             assert prog["jobs"] == {"done": 2 * N}  # nothing lost, failed, or duplicated
             assert len(store.research(cid)["profiles"]) == N  # no lost read-modify-write updates
             assert store.candidates(cid)["intake"]["other_criteria"] == "undergrads"
-        print(f"\n  load: {CAMPAIGNS * N} people researched in {research_s:.1f}s, "
-              f"researched+drafted in {total_s:.1f}s")
+        print(f"\n  load: {CAMPAIGNS * N} people researched in {research_s:.1f}s, researched+drafted in {total_s:.1f}s")
         assert total_s < 120

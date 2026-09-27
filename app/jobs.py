@@ -9,6 +9,7 @@ Shutdown: close() stops workers taking new items, gives running jobs `grace`
 seconds to finish, cancels the rest, and checkpoints every unfinished job as
 `interrupted` so Resume picks it up after the next start.
 """
+
 import asyncio
 import logging
 import secrets
@@ -80,7 +81,9 @@ class Coordinator:
             started = time.monotonic()
             try:
                 if campaign_id in self.stopped or self.closing:
-                    self.cache.put_job(job_id, campaign_id, kind, candidate_id, "stopped" if not self.closing else "interrupted")
+                    self.cache.put_job(
+                        job_id, campaign_id, kind, candidate_id, "stopped" if not self.closing else "interrupted"
+                    )
                     continue
                 self.running += 1
                 self.cache.put_job(job_id, campaign_id, kind, candidate_id, "running")
@@ -95,7 +98,9 @@ class Coordinator:
                 raise
             except Exception as e:  # one failure never blocks the batch
                 log.exception("job failed", extra=extra)
-                self.cache.put_job(job_id, campaign_id, kind, candidate_id, "failed", f"{type(e).__name__}: {str(e)[:200]}")
+                self.cache.put_job(
+                    job_id, campaign_id, kind, candidate_id, "failed", f"{type(e).__name__}: {str(e)[:200]}"
+                )
             finally:
                 q.task_done()
 

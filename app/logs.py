@@ -5,6 +5,7 @@ stray email address, API key, OAuth token, or draft text in an exception
 message is scrubbed before it reaches stderr. Code still never logs draft
 bodies, page text, or names on purpose; redaction is the safety net.
 """
+
 import contextvars
 import json
 import logging

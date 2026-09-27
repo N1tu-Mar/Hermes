@@ -1,4 +1,5 @@
 """Backup/restore, deletion, and retention operations."""
+
 import json
 import sqlite3
 import time
@@ -6,7 +7,7 @@ import time
 import pytest
 
 from app import ops
-from tests.support import run_research_flow, make_campaign
+from tests.support import make_campaign, run_research_flow
 
 PASS = "correct horse battery staple"
 TABLES = ("pages", "research_cache", "drafts", "jobs", "usage", "events")
@@ -102,8 +103,10 @@ def test_delete_refused_while_jobs_run(env):
 
 def test_forget_person_everywhere(env):
     client, svc, _ = env
-    cids = [make_campaign(client, "Rutgers/Princeton professors working on computational neurodevelopment")
-            for _ in range(2)]
+    cids = [
+        make_campaign(client, "Rutgers/Princeton professors working on computational neurodevelopment")
+        for _ in range(2)
+    ]
     for cid in cids:
         run_research_flow(client, cid)
     name = svc.store.candidates(cids[0])["candidates"][0]["name"]

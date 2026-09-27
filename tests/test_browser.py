@@ -1,5 +1,6 @@
 """Critical workflow in a real browser against a live server (demo mode):
 request -> intake -> discovery -> research -> drafts -> edit -> approve -> export, under the production CSP."""
+
 import socket
 import threading
 import time
@@ -49,7 +50,9 @@ def test_critical_workflow_in_browser(server):
         page.click("button.mode[data-mode=research]")
         page.fill("#ask-text", "Rutgers/Princeton professors working on computational neurodevelopment")
         page.click("#ask-form button[type=submit]")
-        page.fill("#intake-form [name=sender_background]", "I'm Nitu, a Rutgers undergraduate studying cognitive science.")
+        page.fill(
+            "#intake-form [name=sender_background]", "I'm Nitu, a Rutgers undergraduate studying cognitive science."
+        )
         page.click("#intake-form button[type=submit]")
 
         rows = page.locator("#rows tr[data-id]")

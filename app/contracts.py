@@ -3,6 +3,7 @@
 Validation returns a list of problems instead of raising so one malformed
 record gets flagged without crashing the whole run.
 """
+
 import re
 from urllib.parse import urlsplit, urlunsplit
 
@@ -11,23 +12,48 @@ SCHEMA_VERSION = 1
 MODES = {"research", "outreach"}
 SUBTYPES = {None, "startup", "research_professor", "speaker_mentor"}
 INTAKE_FIELDS = (
-    "mode", "subtype", "raw_request", "organizations", "locations",
-    "research_areas", "industries", "work_style", "other_criteria",
-    "outreach_goal", "event_details", "sender_background",
+    "mode",
+    "subtype",
+    "raw_request",
+    "organizations",
+    "locations",
+    "research_areas",
+    "industries",
+    "work_style",
+    "other_criteria",
+    "outreach_goal",
+    "event_details",
+    "sender_background",
 )
 LIST_FIELDS = {"organizations", "locations", "research_areas", "industries"}
 
 CANDIDATE_STATES = {
-    "discovered", "selected", "researching", "researched",
-    "excluded", "needs_contact_review", "research_failed",
+    "discovered",
+    "selected",
+    "researching",
+    "researched",
+    "excluded",
+    "needs_contact_review",
+    "research_failed",
 }
 DRAFT_STATES = {"generated", "needs_review", "approved", "gmail_draft_created", "blocked"}
 
-CANDIDATE_KEYS = ("candidate_id", "name", "organization", "role",
-                  "profile_url", "discovery_source_url", "status")
-PROFILE_KEYS = ("candidate_id", "name", "organization", "role", "contact_email",
-                "contact_source_url", "email_verified_on_page", "summary",
-                "research_interests", "fit_reason", "evidence", "researched_at", "status")
+CANDIDATE_KEYS = ("candidate_id", "name", "organization", "role", "profile_url", "discovery_source_url", "status")
+PROFILE_KEYS = (
+    "candidate_id",
+    "name",
+    "organization",
+    "role",
+    "contact_email",
+    "contact_source_url",
+    "email_verified_on_page",
+    "summary",
+    "research_interests",
+    "fit_reason",
+    "evidence",
+    "researched_at",
+    "status",
+)
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -87,7 +113,9 @@ def profile_problems(pr):
     if not pr.get("candidate_id"):
         p.append("missing candidate_id")
     for e in pr.get("evidence") or []:
-        if not (isinstance(e, dict) and e.get("claim") and normalize_url(e.get("source_url")) and e.get("retrieved_at")):
+        if not (
+            isinstance(e, dict) and e.get("claim") and normalize_url(e.get("source_url")) and e.get("retrieved_at")
+        ):
             p.append(f"unsourced evidence {e!r:.80}")
     if pr.get("email_verified_on_page") and not (pr.get("contact_email") and pr.get("contact_source_url")):
         p.append("email marked verified without email and source")

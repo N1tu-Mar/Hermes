@@ -1,4 +1,5 @@
 """Logs are structured, correlated, and never carry draft text, credentials, or personal data."""
+
 import io
 import json
 import logging
@@ -10,9 +11,12 @@ SECRET_KEY = "sk-proj-THISISAFAKEKEY1234567890abcdef"
 
 
 def test_redact_scrubs_sensitive_values():
-    text = (f'api_key={SECRET_KEY} {{"access_token": "ya29.a0AfH6SMBx", "refresh_token": "1//0gAbCdEfGhIjKlMn"}} '  # gitleaks:allow (fake fixture)
-            "Authorization: Bearer abc.def.ghi mail avery.lin@demo.example.edu call +1 (732) 555-0199 "
-            'body="Dear Dr. Lin, I loved your paper" session=Zm9vYmFyYmF6cXV4cXV1eHF1dXhxdXV4cXV1eA')
+    text = (
+        f'api_key={SECRET_KEY} {{"access_token": "ya29.a0AfH6SMBx", '  # gitleaks:allow (fake fixture)
+        '"refresh_token": "1//0gAbCdEfGhIjKlMn"}} '  # gitleaks:allow (fake fixture)
+        "Authorization: Bearer abc.def.ghi mail avery.lin@demo.example.edu call +1 (732) 555-0199 "
+        'body="Dear Dr. Lin, I loved your paper" session=Zm9vYmFyYmF6cXV4cXV1eHF1dXhxdXV4cXV1eA'
+    )
     out = logs.redact(text)
     for leak in ("sk-proj", "ya29.", "1//0g", "abc.def", "avery.lin", "555-0199", "Dear Dr", "Zm9vYmFy"):
         assert leak not in out, leak
@@ -45,7 +49,15 @@ def test_workflow_logs_are_json_correlated_and_clean(env):
     assert jobs and all(line.get("job_id") and line.get("request_id") for line in jobs)
     dump = buf.getvalue()
     profile = svc.store.research(cid)["profiles"][ids[0]]
-    sensitive = [SECRET_KEY, "avery.lin", profile["contact_email"], d["subject"], d["body"][:40],
-                 *(line for line in d["body"].splitlines() if len(line) > 25), "?t=", "x-app-token"]
+    sensitive = [
+        SECRET_KEY,
+        "avery.lin",
+        profile["contact_email"],
+        d["subject"],
+        d["body"][:40],
+        *(line for line in d["body"].splitlines() if len(line) > 25),
+        "?t=",
+        "x-app-token",
+    ]
     for s in sensitive:
         assert s not in dump, s

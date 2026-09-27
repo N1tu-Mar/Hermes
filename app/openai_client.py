@@ -3,6 +3,7 @@
 One client per process. Stable instructions go first so prompt caching can
 reuse the prefix; per-person content goes last.
 """
+
 import asyncio
 import json
 import os
@@ -21,6 +22,7 @@ class OpenAIModel:
 
     def __init__(self, cache, api_key=None, model=None):
         from openai import AsyncOpenAI
+
         self.client = AsyncOpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"], timeout=90, max_retries=0)
         self.model = model or os.environ.get("OPENAI_MODEL") or "gpt-5.6-terra"
         self.cache = cache
@@ -52,17 +54,20 @@ class OpenAIModel:
             except Exception as e:  # openai.APIError subclasses; keep message short
                 status = getattr(e, "status_code", None)
                 if attempt == 2 or (status and status < 500 and status != 429):
-                    raise ModelError(f"{type(e).__name__}: {str(e)[:200]}")
+                    raise ModelError(f"{type(e).__name__}: {str(e)[:200]}") from e
                 await asyncio.sleep(delay)
                 delay *= 3
         usage = getattr(resp, "usage", None)
-        self.cache.bump_usage(campaign_id, api_calls=1,
-                              input_tokens=getattr(usage, "input_tokens", 0) or 0,
-                              output_tokens=getattr(usage, "output_tokens", 0) or 0)
+        self.cache.bump_usage(
+            campaign_id,
+            api_calls=1,
+            input_tokens=getattr(usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(usage, "output_tokens", 0) or 0,
+        )
         try:
             data = json.loads(resp.output_text)
         except (json.JSONDecodeError, TypeError) as e:
-            raise ModelError(f"unparseable model output: {e}")
+            raise ModelError(f"unparseable model output: {e}") from e
         return data, _cited_urls(resp)
 
 

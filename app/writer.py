@@ -3,6 +3,7 @@
 Validation is plain code (no second LLM call). Anything suspicious flags the
 draft for review; nothing is ever sent.
 """
+
 import hashlib
 import json
 import re
@@ -18,18 +19,27 @@ WRITER_INSTRUCTIONS = (
 )
 
 DRAFT_SCHEMA = {
-    "type": "object", "additionalProperties": False,
+    "type": "object",
+    "additionalProperties": False,
     "required": ["subject", "body", "evidence_ids_used"],
-    "properties": {"subject": {"type": "string"}, "body": {"type": "string"},
-                   "evidence_ids_used": {"type": "array", "items": {"type": "string"}}},
+    "properties": {
+        "subject": {"type": "string"},
+        "body": {"type": "string"},
+        "evidence_ids_used": {"type": "array", "items": {"type": "string"}},
+    },
 }
 
 URL_RE = re.compile(r"https?://|www\.", re.I)
 YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 DATE_RE = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.? \d{1,2}\b", re.I)
-RELATIONSHIP_RE = re.compile(r"\b(as we discussed|great (to|meeting) (meet|you)|when we met|our (last )?conversation|"
-                             r"you (may )?remember me|following up on our)\b", re.I)
-PRAISE_RE = re.compile(r"\b(huge fan|world[- ]renowned|legendary|genius|brilliant|groundbreaking|revolutionary)\b", re.I)
+RELATIONSHIP_RE = re.compile(
+    r"\b(as we discussed|great (to|meeting) (meet|you)|when we met|our (last )?conversation|"
+    r"you (may )?remember me|following up on our)\b",
+    re.I,
+)
+PRAISE_RE = re.compile(
+    r"\b(huge fan|world[- ]renowned|legendary|genius|brilliant|groundbreaking|revolutionary)\b", re.I
+)
 PLACEHOLDER_RE = re.compile(r"\[[A-Z][^\]]{0,30}\]|\{\w+\}")
 
 
@@ -44,21 +54,34 @@ def writer_input(outline, recipient):
 
 async def write_draft(model, campaign_id, outline, profile):
     recipient = {"name": profile.get("name"), "organization": profile.get("organization"), "role": profile.get("role")}
-    data, _ = await model.structured(campaign_id, WRITER_INSTRUCTIONS, writer_input(outline, recipient),
-                                     "email_draft", DRAFT_SCHEMA)
+    data, _ = await model.structured(
+        campaign_id, WRITER_INSTRUCTIONS, writer_input(outline, recipient), "email_draft", DRAFT_SCHEMA
+    )
     subject, body = (data.get("subject") or "").strip(), (data.get("body") or "").strip()
     used = [i for i in data.get("evidence_ids_used") or [] if i in outline["evidence_ids"]]
-    return {"subject": subject, "body": body, "evidence_ids": used,
-            "issues": check_draft(subject, body, outline, profile, used)}
+    return {
+        "subject": subject,
+        "body": body,
+        "evidence_ids": used,
+        "issues": check_draft(subject, body, outline, profile, used),
+    }
 
 
 def check_draft(subject, body, outline, profile, used_ids):
     """Deterministic guardrails. Returns list of human-readable issues (empty = clean)."""
     issues = []
     text = f"{subject}\n{body}"
-    facts = " ".join(e["claim"] for e in outline["evidence"]) + " " + outline["sender_context"] + " " + \
-        json.dumps(outline.get("event_details") or "") + " " + json.dumps(outline.get("earlier_invite") or "") + \
-        " " + outline["ask"]
+    facts = (
+        " ".join(e["claim"] for e in outline["evidence"])
+        + " "
+        + outline["sender_context"]
+        + " "
+        + json.dumps(outline.get("event_details") or "")
+        + " "
+        + json.dumps(outline.get("earlier_invite") or "")
+        + " "
+        + outline["ask"]
+    )
     if not subject:
         issues.append("empty subject")
     if not body:
@@ -86,5 +109,5 @@ def check_draft(subject, body, outline, profile, used_ids):
     quoted = re.findall(r"[\"“]([^\"”]{8,})[\"”]", text)  # quoted titles must come from evidence
     for q in quoted:
         if q.lower() not in facts.lower():
-            issues.append(f"quotes a title/phrase not in the evidence: \"{q[:60]}\"")
+            issues.append(f'quotes a title/phrase not in the evidence: "{q[:60]}"')
     return issues

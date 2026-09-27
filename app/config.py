@@ -4,6 +4,7 @@ Every problem is collected and reported together so a bad deploy shows the
 whole list instead of one error per restart. Secrets are held here but never
 included in repr() or diagnostics.
 """
+
 import ipaddress
 import os
 from dataclasses import dataclass, field
@@ -100,7 +101,9 @@ def load_config(env=None):
         except ValueError:
             loopback = False
         if not loopback:
-            problems.append(f"APP_HOST={host!r}: local mode only binds to loopback; use HERMES_MODE=remote to expose it")
+            problems.append(
+                f"APP_HOST={host!r}: local mode only binds to loopback; use HERMES_MODE=remote to expose it"
+            )
     else:
         parts = urlsplit(public_url)
         if parts.scheme != "https" or not parts.hostname:

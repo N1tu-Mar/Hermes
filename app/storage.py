@@ -6,12 +6,13 @@ fsynced and atomically replaced. That is O(n) file I/O and O(n) memory per
 snapshot, fine at 20-100 records; migrate to JSONL/SQLite (with a
 schema_version bump) if campaigns grow far larger.
 """
+
 import json
 import os
 import re
 import secrets
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .contracts import SCHEMA_VERSION, validate_files
@@ -21,7 +22,7 @@ ID_RE = re.compile(r"^cmp_[0-9]{8}_[a-f0-9]{8}$")
 
 
 def now_iso():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def atomic_write_json(path, obj):
@@ -65,7 +66,7 @@ class CampaignStore:
         return sorted((p.name for p in self.root.iterdir() if ID_RE.match(p.name)), reverse=True)
 
     def create(self, intake):
-        cid = f"cmp_{datetime.now(timezone.utc):%Y%m%d}_{secrets.token_hex(4)}"
+        cid = f"cmp_{datetime.now(UTC):%Y%m%d}_{secrets.token_hex(4)}"
         d = self.dir(cid)
         d.mkdir()
         cand = json.loads((self.template_root / "candidates.json").read_text())

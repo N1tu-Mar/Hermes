@@ -1,4 +1,5 @@
 """Health, readiness, diagnostics, and response hardening. None of them reveal secrets."""
+
 from fastapi.testclient import TestClient
 
 from app.api import create_app

@@ -3,6 +3,7 @@
 The only place that decides state transitions. HTTP and MCP both call this
 through the API routes; domain modules below it know nothing about either.
 """
+
 import asyncio
 import inspect
 import logging
@@ -12,10 +13,9 @@ import time
 from datetime import datetime
 
 from . import outlines, research, writer
-from .contracts import clean_intake, dedupe_key, normalize_url
+from .contracts import clean_intake, dedupe_key
 from .jobs import Coordinator
 from .openai_client import BudgetExceeded, ModelError
-
 
 log = logging.getLogger("campaigns")
 
@@ -24,10 +24,37 @@ class Rejected(Exception):
     """Request not allowed in current state (maps to HTTP 409/400)."""
 
 
-KNOWN_ORGS = ["Rutgers", "Princeton", "Columbia", "UPenn", "Penn", "NYU", "Cornell", "MIT", "Stanford",
-              "Harvard", "Yale", "Rutgers Entrepreneur Society", "Road to Silicon Valley", "NJIT", "Stevens"]
-LOCATIONS = ["New Jersey", "NJ", "New York", "NYC", "Philadelphia", "Boston", "San Francisco", "Bay Area",
-             "Silicon Valley", "remote", "New Brunswick", "Princeton"]
+KNOWN_ORGS = [
+    "Rutgers",
+    "Princeton",
+    "Columbia",
+    "UPenn",
+    "Penn",
+    "NYU",
+    "Cornell",
+    "MIT",
+    "Stanford",
+    "Harvard",
+    "Yale",
+    "Rutgers Entrepreneur Society",
+    "Road to Silicon Valley",
+    "NJIT",
+    "Stevens",
+]
+LOCATIONS = [
+    "New Jersey",
+    "NJ",
+    "New York",
+    "NYC",
+    "Philadelphia",
+    "Boston",
+    "San Francisco",
+    "Bay Area",
+    "Silicon Valley",
+    "remote",
+    "New Brunswick",
+    "Princeton",
+]
 
 
 def parse_request(text, mode_hint=None, subtype_hint=None):
@@ -48,9 +75,13 @@ def parse_request(text, mode_hint=None, subtype_hint=None):
 
     orgs = [o for o in KNOWN_ORGS if re.search(rf"\b{re.escape(o)}\b", t, re.I)]
     orgs = [o for o in orgs if not any(o != p and o in p for p in orgs)]  # "Rutgers" inside the club name
-    locs = [l for l in LOCATIONS if re.search(rf"\b{re.escape(l)}\b", t, re.I) and l not in orgs]
+    locs = [loc for loc in LOCATIONS if re.search(rf"\b{re.escape(loc)}\b", t, re.I) and loc not in orgs]
     topic = None
-    m = re.search(r"\b(?:working on|work on|in|focused on|focus on|about|doing)\s+([a-z][a-z \-/]{3,60}?)(?=\s+(?:who|that|and|at|for|in)\b|[.,;]|$)", low)
+    m = re.search(
+        r"\b(?:working on|work on|in|focused on|focus on|about|doing)\s+([a-z][a-z \-/]{3,60}?)"
+        r"(?=\s+(?:who|that|and|at|for|in)\b|[.,;]|$)",
+        low,
+    )
     if m:
         topic = m.group(1).strip()
     ask = None
@@ -64,12 +95,18 @@ def parse_request(text, mode_hint=None, subtype_hint=None):
         event = m.group(1) if m else None
 
     intake = {
-        "mode": mode, "subtype": subtype, "raw_request": t.strip(),
-        "organizations": orgs, "locations": locs,
+        "mode": mode,
+        "subtype": subtype,
+        "raw_request": t.strip(),
+        "organizations": orgs,
+        "locations": locs,
         "research_areas": [topic] if topic and subtype != "startup" else [],
         "industries": [topic] if topic and subtype == "startup" else [],
-        "work_style": work_style, "other_criteria": "undergraduates welcome" if "undergrad" in low else None,
-        "outreach_goal": ask, "event_details": event, "sender_background": None,
+        "work_style": work_style,
+        "other_criteria": "undergraduates welcome" if "undergrad" in low else None,
+        "outreach_goal": ask,
+        "event_details": event,
+        "sender_background": None,
     }
     missing = essential_missing(intake)
     return intake, missing
@@ -87,18 +124,21 @@ def essential_missing(intake):
 class CampaignService:
     def __init__(self, store, cache, model, fetcher, gmail=None):
         self.store, self.cache, self.model, self.fetcher, self.gmail = store, cache, model, fetcher, gmail
-        self.jobs = Coordinator(cache, {"discover": self._do_discover, "research": self._do_research,
-                                        "write": self._do_write})
+        self.jobs = Coordinator(
+            cache, {"discover": self._do_discover, "research": self._do_research, "write": self._do_write}
+        )
 
     # ---------------------------------------------------------------- lifecycle
     def startup(self):
         """Mark interrupted jobs resumable and un-stick 'researching' candidates."""
         self.cache.mark_interrupted()
         for cid in self.store.list_ids():
+
             def unstick(doc):
                 for c in doc["candidates"]:
                     if c["status"] == "researching":
                         c["status"] = "selected"
+
             try:
                 self.store.update_candidates(cid, unstick)
             except Exception:
@@ -108,8 +148,11 @@ class CampaignService:
     async def shutdown(self, grace=10.0):
         """Drain/checkpoint jobs, then close provider clients and the database."""
         await self.jobs.close(grace)
-        for obj in (getattr(self.model, "client", None), getattr(self.fetcher, "client", None),
-                    getattr(self.gmail, "svc", None)):
+        for obj in (
+            getattr(self.model, "client", None),
+            getattr(self.fetcher, "client", None),
+            getattr(self.gmail, "svc", None),
+        ):
             close = getattr(obj, "aclose", None) or getattr(obj, "close", None)
             try:
                 if close and inspect.iscoroutine(res := close()):
@@ -136,9 +179,12 @@ class CampaignService:
         def apply(doc):
             merged = {**doc["intake"], **{k: v for k, v in patch.items() if k != "max_candidates"}}
             new = clean_intake(merged)
-            new["max_candidates"] = max(1, min(int(patch.get("max_candidates") or doc["intake"].get("max_candidates", 20)), 100))
+            new["max_candidates"] = max(
+                1, min(int(patch.get("max_candidates") or doc["intake"].get("max_candidates", 20)), 100)
+            )
             doc["intake"] = new
             return new
+
         intake = self.store.update_candidates(campaign_id, apply)
         if "budget" in patch:
             self.cache.set_budget(campaign_id, int(patch["budget"]))
@@ -149,9 +195,15 @@ class CampaignService:
         for cid in self.store.list_ids()[:50]:
             try:
                 doc = self.store.candidates(cid)
-                out.append({"campaign_id": cid, "subtype": doc["intake"].get("subtype"),
-                            "request": (doc["intake"].get("raw_request") or "")[:120],
-                            "candidates": len(doc["candidates"]), "created_at": doc.get("created_at")})
+                out.append(
+                    {
+                        "campaign_id": cid,
+                        "subtype": doc["intake"].get("subtype"),
+                        "request": (doc["intake"].get("raw_request") or "")[:120],
+                        "candidates": len(doc["candidates"]),
+                        "created_at": doc.get("created_at"),
+                    }
+                )
             except Exception as e:
                 out.append({"campaign_id": cid, "error": str(e)[:100]})
         return out
@@ -178,21 +230,31 @@ class CampaignService:
     async def _do_discover(self, campaign_id, _):
         doc = self.store.candidates(campaign_id)
         intake, existing = doc["intake"], doc["candidates"]
-        keys = {dedupe_key(c["name"], c.get("organization")) for c in existing} | \
-               {c["profile_url"] for c in existing if c.get("profile_url")}
-        people = await research.discover(self.model, campaign_id, intake,
-                                         intake["max_candidates"] - len(existing), keys)
+        keys = {dedupe_key(c["name"], c.get("organization")) for c in existing} | {
+            c["profile_url"] for c in existing if c.get("profile_url")
+        }
+        people = await research.discover(
+            self.model, campaign_id, intake, intake["max_candidates"] - len(existing), keys
+        )
 
         def add(doc):
             nums = [int(c["candidate_id"][2:]) for c in doc["candidates"] if re.fullmatch(r"c_\d+", c["candidate_id"])]
             n = max(nums, default=0)
             for p in people:
                 n += 1
-                doc["candidates"].append({"candidate_id": f"c_{n:03d}", "name": p["name"],
-                                          "organization": p["organization"], "role": p["role"],
-                                          "profile_url": p["profile_url"],
-                                          "discovery_source_url": p["discovery_source_url"],
-                                          "status": "discovered", "fit_hint": p["fit_hint"]})
+                doc["candidates"].append(
+                    {
+                        "candidate_id": f"c_{n:03d}",
+                        "name": p["name"],
+                        "organization": p["organization"],
+                        "role": p["role"],
+                        "profile_url": p["profile_url"],
+                        "discovery_source_url": p["discovery_source_url"],
+                        "status": "discovered",
+                        "fit_hint": p["fit_hint"],
+                    }
+                )
+
         self.store.update_candidates(campaign_id, add)
         self.cache.event(campaign_id, f"discovered {len(people)} new candidates")
 
@@ -218,6 +280,7 @@ class CampaignService:
                     continue
                 changed.append(c["candidate_id"])
             return changed
+
         return self.store.update_candidates(campaign_id, apply)
 
     # ---------------------------------------------------------------- research
@@ -232,14 +295,23 @@ class CampaignService:
         profiles = self.store.research(campaign_id)["profiles"]
         busy = {j["candidate_id"] for j in self._active(campaign_id, "research")}
         wanted = set(candidate_ids) if candidate_ids else None
-        todo = [c["candidate_id"] for c in cands
-                if c["status"] != "excluded" and c["candidate_id"] not in busy
-                and (c["candidate_id"] in wanted if wanted else c["status"] == "selected")  # failed ones retry only when named
-                and (refresh or not self._fresh_profile(profiles, c["candidate_id"]))]
+        todo = [
+            c["candidate_id"]
+            for c in cands
+            if c["status"] != "excluded"
+            and c["candidate_id"] not in busy
+            and (
+                c["candidate_id"] in wanted if wanted else c["status"] == "selected"
+            )  # failed ones retry only when named
+            and (refresh or not self._fresh_profile(profiles, c["candidate_id"]))
+        ]
         if len(todo) > self._remaining(campaign_id):
-            raise Rejected(f"{len(todo)} research calls projected but only {self._remaining(campaign_id)} left in budget")
-        self.store.update_candidates(campaign_id, lambda d: [c.update(status="selected") for c in d["candidates"]
-                                                             if c["candidate_id"] in todo])
+            raise Rejected(
+                f"{len(todo)} research calls projected but only {self._remaining(campaign_id)} left in budget"
+            )
+        self.store.update_candidates(
+            campaign_id, lambda d: [c.update(status="selected") for c in d["candidates"] if c["candidate_id"] in todo]
+        )
         for cid in todo:
             if refresh:
                 self.cache.drop_research(f"{campaign_id}:{cid}:")
@@ -254,6 +326,7 @@ class CampaignService:
                         c["error"] = error
                     else:
                         c.pop("error", None)
+
         self.store.update_candidates(campaign_id, apply)
 
     async def _do_research(self, campaign_id, cand_id):
@@ -261,8 +334,10 @@ class CampaignService:
         cand = next((c for c in doc["candidates"] if c["candidate_id"] == cand_id), None)
         if not cand or cand["status"] == "excluded":
             return
-        compact = {k: cand.get(k) for k in ("candidate_id", "name", "organization", "role",
-                                            "profile_url", "discovery_source_url")}
+        compact = {
+            k: cand.get(k)
+            for k in ("candidate_id", "name", "organization", "role", "profile_url", "discovery_source_url")
+        }
         key = f"{campaign_id}:{cand_id}:{research.criteria_hash(doc['intake'])}:{cand.get('profile_url')}"
         self._set_status(campaign_id, cand_id, "researching")
         profile = self.cache.get_research(key)
@@ -270,7 +345,9 @@ class CampaignService:
             self.cache.bump_usage(campaign_id, cache_hits=1)
         else:
             try:
-                profile = await research.research_candidate(self.model, self.fetcher, campaign_id, doc["intake"], compact)
+                profile = await research.research_candidate(
+                    self.model, self.fetcher, campaign_id, doc["intake"], compact
+                )
             except (BudgetExceeded, ModelError) as e:
                 category = "budget" if isinstance(e, BudgetExceeded) else "model"
                 self._set_status(campaign_id, cand_id, "research_failed", f"{category}: {str(e)[:120]}")
@@ -281,9 +358,15 @@ class CampaignService:
 
         def save(rdoc):
             rdoc["profiles"][cand_id] = profile
+
         self.store.update_research(campaign_id, save)  # persisted immediately: a stop never loses it
-        err = None if profile["status"] != "research_failed" else "no sourced evidence (" + \
-            ("; ".join(profile.get("notes", {}).get("fetch_errors", [])) or "nothing verifiable") + ")"
+        err = (
+            None
+            if profile["status"] != "research_failed"
+            else "no sourced evidence ("
+            + ("; ".join(profile.get("notes", {}).get("fetch_errors", [])) or "nothing verifiable")
+            + ")"
+        )
         self._set_status(campaign_id, cand_id, profile["status"], err and err[:200])
         self.cache.event(campaign_id, f"{cand['name']}: {profile['status']}")
 
@@ -297,8 +380,10 @@ class CampaignService:
         if followup:
             inv = self.cache.get_draft(campaign_id, cand_id, outlines.TEMPLATES["speaker_invite"]["version"])
             if inv and inv.get("invited_at"):
-                earlier = {"invitation_subject": inv["subject"],
-                           "invited_on": datetime.fromtimestamp(inv["invited_at"]).strftime("%B %d").replace(" 0", " ")}
+                earlier = {
+                    "invitation_subject": inv["subject"],
+                    "invited_on": datetime.fromtimestamp(inv["invited_at"]).strftime("%B %d").replace(" 0", " "),
+                }
         return outlines.build_outline(intake, profile, intake.get("sender_background"), followup, earlier), profile
 
     def generate(self, campaign_id, candidate_ids, followup=False):
@@ -307,8 +392,10 @@ class CampaignService:
             raise Rejected("pass explicit candidate_ids")
         profiles = self.store.research(campaign_id)["profiles"]
         ready = [c for c in candidate_ids if self._fresh_profile(profiles, c)]
-        return {"queued": [self.jobs.submit(campaign_id, "write", f"{c}#followup" if followup else c) for c in ready],
-                "skipped_not_researched": sorted(set(candidate_ids) - set(ready))}
+        return {
+            "queued": [self.jobs.submit(campaign_id, "write", f"{c}#followup" if followup else c) for c in ready],
+            "skipped_not_researched": sorted(set(candidate_ids) - set(ready)),
+        }
 
     async def _do_write(self, campaign_id, arg):
         cand_id, _, flag = arg.partition("#")
@@ -331,19 +418,37 @@ class CampaignService:
             self.cache.bump_usage(campaign_id, cache_hits=1)
             return  # same inputs: keep existing draft and its approval
         d = await writer.write_draft(self.model, campaign_id, outline, profile)
-        self.cache.upsert_draft(campaign_id, cand_id, version, input_hash=h, subject=d["subject"], body=d["body"],
-                                evidence_ids=d["evidence_ids"], outline=outline, issues=d["issues"],
-                                status="needs_review")
-        self.cache.event(campaign_id, f"{profile['name']}: draft ready for review"
-                         + (f" ({len(d['issues'])} flags)" if d["issues"] else ""))
+        self.cache.upsert_draft(
+            campaign_id,
+            cand_id,
+            version,
+            input_hash=h,
+            subject=d["subject"],
+            body=d["body"],
+            evidence_ids=d["evidence_ids"],
+            outline=outline,
+            issues=d["issues"],
+            status="needs_review",
+        )
+        self.cache.event(
+            campaign_id,
+            f"{profile['name']}: draft ready for review" + (f" ({len(d['issues'])} flags)" if d["issues"] else ""),
+        )
 
     def edit_draft(self, campaign_id, cand_id, subject, body):
         d = self._draft(campaign_id, cand_id)
         if d["status"] in ("gmail_draft_created", "blocked"):
             raise Rejected(f"cannot edit a draft in state {d['status']}")
         issues = writer.check_draft(subject, body, d["outline"], None, d["evidence_ids"])
-        self.cache.upsert_draft(campaign_id, cand_id, d["template_version"], subject=subject, body=body,
-                                issues=issues, status="needs_review")
+        self.cache.upsert_draft(
+            campaign_id,
+            cand_id,
+            d["template_version"],
+            subject=subject,
+            body=body,
+            issues=issues,
+            status="needs_review",
+        )
         return self._draft(campaign_id, cand_id)
 
     def _draft(self, campaign_id, cand_id):
@@ -356,7 +461,9 @@ class CampaignService:
     def _still_current(self, campaign_id, d):
         """Approval is only valid while the outline inputs (template, evidence, ask, bio) are unchanged."""
         try:
-            outline, _ = self._outline(campaign_id, d["candidate_id"], d["template_version"].startswith("rsvp_followup"))
+            outline, _ = self._outline(
+                campaign_id, d["candidate_id"], d["template_version"].startswith("rsvp_followup")
+            )
         except outlines.OutlineBlocked:
             return False
         return outline["template_version"] == d["template_version"] and writer.input_hash(outline) == d["input_hash"]
@@ -366,8 +473,15 @@ class CampaignService:
         if d["status"] != "needs_review":
             raise Rejected(f"only drafts in needs_review can be approved (is {d['status']})")
         if not self._still_current(campaign_id, d):
-            self.cache.upsert_draft(campaign_id, cand_id, d["template_version"], issues=d["issues"] + ["inputs changed since generation; regenerate"])
-            raise Rejected("evidence, template, ask, or background changed since this draft was generated; regenerate first")
+            self.cache.upsert_draft(
+                campaign_id,
+                cand_id,
+                d["template_version"],
+                issues=d["issues"] + ["inputs changed since generation; regenerate"],
+            )
+            raise Rejected(
+                "evidence, template, ask, or background changed since this draft was generated; regenerate first"
+            )
         self.cache.upsert_draft(campaign_id, cand_id, d["template_version"], status="approved")
         self.cache.event(campaign_id, f"{cand_id}: draft approved")
         return self._draft(campaign_id, cand_id)
@@ -378,8 +492,7 @@ class CampaignService:
         d = self.cache.get_draft(campaign_id, cand_id, outlines.TEMPLATES["speaker_invite"]["version"])
         if not d or d["status"] not in ("approved", "gmail_draft_created"):
             raise Rejected("only an approved speaker invitation can be marked as sent")
-        self.cache.upsert_draft(campaign_id, cand_id, d["template_version"],
-                                invited_at=time.time())
+        self.cache.upsert_draft(campaign_id, cand_id, d["template_version"], invited_at=time.time())
         return {"ok": True}
 
     # ---------------------------------------------------------------- gmail
@@ -415,7 +528,9 @@ class CampaignService:
             except Exception as e:
                 return {"result": f"uncertain: reconcile failed ({type(e).__name__}); check Gmail Drafts manually"}
             if found:
-                self.cache.upsert_draft(campaign_id, d["candidate_id"], tv, gmail_draft_id=found, status="gmail_draft_created")
+                self.cache.upsert_draft(
+                    campaign_id, d["candidate_id"], tv, gmail_draft_id=found, status="gmail_draft_created"
+                )
                 return {"result": "reconciled existing draft", "gmail_draft_id": found}
         to = profile.get("contact_email") if profile.get("email_verified_on_page") else None
         self.cache.upsert_draft(campaign_id, d["candidate_id"], tv, gmail_attempt_at=time.time())
@@ -425,7 +540,10 @@ class CampaignService:
             return {"result": f"failed ({type(e).__name__}); retry will reconcile first"}
         self.cache.upsert_draft(campaign_id, d["candidate_id"], tv, gmail_draft_id=gid, status="gmail_draft_created")
         self.cache.event(campaign_id, f"{d['candidate_id']}: Gmail draft created")
-        return {"result": "created" + ("" if to else " (no verified recipient; add To in Gmail)"), "gmail_draft_id": gid}
+        return {
+            "result": "created" + ("" if to else " (no verified recipient; add To in Gmail)"),
+            "gmail_draft_id": gid,
+        }
 
     @staticmethod
     def export_one(d, profile):
@@ -435,8 +553,11 @@ class CampaignService:
     def export(self, campaign_id):
         self._require(campaign_id)
         profiles = self.store.research(campaign_id)["profiles"]
-        return "\n\n-----\n\n".join(self.export_one(d, profiles.get(d["candidate_id"]))
-                                    for d in self.cache.list_drafts(campaign_id) if d["status"] in ("approved", "gmail_draft_created"))
+        return "\n\n-----\n\n".join(
+            self.export_one(d, profiles.get(d["candidate_id"]))
+            for d in self.cache.list_drafts(campaign_id)
+            if d["status"] in ("approved", "gmail_draft_created")
+        )
 
     # ---------------------------------------------------------------- views
     def get(self, campaign_id):
@@ -450,11 +571,24 @@ class CampaignService:
         rows = []
         for c in cdoc["candidates"]:
             p, d = profiles.get(c["candidate_id"]) or {}, drafts.get(c["candidate_id"]) or {}
-            rows.append({**c, "email": p.get("contact_email"), "email_verified": p.get("email_verified_on_page", False),
-                         "fit_reason": p.get("fit_reason") or c.get("fit_hint"), "evidence_count": len(p.get("evidence") or []),
-                         "draft_status": d.get("status"), "draft_flags": len(d.get("issues") or [])})
-        return {"campaign_id": campaign_id, "intake": cdoc["intake"], "candidates": rows,
-                "demo": getattr(self.model, "demo", False), "gmail_connected": self.gmail is not None}
+            rows.append(
+                {
+                    **c,
+                    "email": p.get("contact_email"),
+                    "email_verified": p.get("email_verified_on_page", False),
+                    "fit_reason": p.get("fit_reason") or c.get("fit_hint"),
+                    "evidence_count": len(p.get("evidence") or []),
+                    "draft_status": d.get("status"),
+                    "draft_flags": len(d.get("issues") or []),
+                }
+            )
+        return {
+            "campaign_id": campaign_id,
+            "intake": cdoc["intake"],
+            "candidates": rows,
+            "demo": getattr(self.model, "demo", False),
+            "gmail_connected": self.gmail is not None,
+        }
 
     def detail(self, campaign_id, cand_id):
         self._require(campaign_id)
@@ -463,8 +597,20 @@ class CampaignService:
             raise KeyError(cand_id)
         d = self.cache.get_draft(campaign_id, cand_id)
         if d:
-            d = {k: d[k] for k in ("template_version", "subject", "body", "evidence_ids", "status", "issues",
-                                   "gmail_draft_id", "invited_at") if k in d}
+            d = {
+                k: d[k]
+                for k in (
+                    "template_version",
+                    "subject",
+                    "body",
+                    "evidence_ids",
+                    "status",
+                    "issues",
+                    "gmail_draft_id",
+                    "invited_at",
+                )
+                if k in d
+            }
         return {"candidate": cand, "profile": self.store.research(campaign_id)["profiles"].get(cand_id), "draft": d}
 
     def progress(self, campaign_id):
@@ -477,10 +623,14 @@ class CampaignService:
         for j in self.cache.jobs(campaign_id):
             jcounts[j["status"]] = jcounts.get(j["status"], 0) + 1
         u = self.cache.usage(campaign_id)
-        return {"candidates": counts, "drafts": dcounts, "jobs": jcounts,
-                "usage": {k: u[k] for k in ("api_calls", "cache_hits", "input_tokens", "output_tokens", "budget")},
-                "stopped": campaign_id in self.jobs.stopped,
-                "recent": self.cache.events(campaign_id)}
+        return {
+            "candidates": counts,
+            "drafts": dcounts,
+            "jobs": jcounts,
+            "usage": {k: u[k] for k in ("api_calls", "cache_hits", "input_tokens", "output_tokens", "budget")},
+            "stopped": campaign_id in self.jobs.stopped,
+            "recent": self.cache.events(campaign_id),
+        }
 
     # ---------------------------------------------------------------- deletion
     def delete_campaign(self, campaign_id):
@@ -498,18 +648,26 @@ class CampaignService:
     def delete_candidate(self, campaign_id, cand_id):
         """Forget one person: candidate record, research profile, drafts, cached research/pages, activity lines."""
         self._require(campaign_id)
-        if any(j["candidate_id"] and j["candidate_id"].partition("#")[0] == cand_id for j in self._active_any(campaign_id)):
+        if any(
+            j["candidate_id"] and j["candidate_id"].partition("#")[0] == cand_id for j in self._active_any(campaign_id)
+        ):
             raise Rejected("a job for this person is still running; stop it first")
         cands = self.store.candidates(campaign_id)["candidates"]
         cand = next((c for c in cands if c["candidate_id"] == cand_id), None)
         if not cand:
             raise KeyError(cand_id)
         profile = self.store.research(campaign_id)["profiles"].get(cand_id) or {}
-        urls = {cand.get("profile_url"), cand.get("discovery_source_url"), profile.get("contact_source_url"),
-                *(e.get("source_url") for e in profile.get("evidence") or [])} - {None}
+        urls = {
+            cand.get("profile_url"),
+            cand.get("discovery_source_url"),
+            profile.get("contact_source_url"),
+            *(e.get("source_url") for e in profile.get("evidence") or []),
+        } - {None}
         self.store.update_research(campaign_id, lambda d: d["profiles"].pop(cand_id, None))
-        self.store.update_candidates(campaign_id, lambda d: d.__setitem__(
-            "candidates", [c for c in d["candidates"] if c["candidate_id"] != cand_id]))
+        self.store.update_candidates(
+            campaign_id,
+            lambda d: d.__setitem__("candidates", [c for c in d["candidates"] if c["candidate_id"] != cand_id]),
+        )
         self.cache.delete_candidate(campaign_id, cand_id, cand.get("name"), urls)
         log.info("candidate deleted", extra={"campaign_id": campaign_id})
         return {"deleted": cand_id}
@@ -522,10 +680,16 @@ class CampaignService:
         jobs = {}
         for j in self.cache.jobs():
             jobs[j["status"]] = jobs.get(j["status"], 0) + 1
-        return {"demo": getattr(self.model, "demo", False), "model": self.model.model,
-                "gmail_connected": self.gmail is not None, "campaigns": len(self.store.list_ids()),
-                "jobs": jobs, "queue_depths": self.jobs.depths(), "workers_alive": self.jobs.alive(),
-                "running_jobs": self.jobs.running}
+        return {
+            "demo": getattr(self.model, "demo", False),
+            "model": self.model.model,
+            "gmail_connected": self.gmail is not None,
+            "campaigns": len(self.store.list_ids()),
+            "jobs": jobs,
+            "queue_depths": self.jobs.depths(),
+            "workers_alive": self.jobs.alive(),
+            "running_jobs": self.jobs.running,
+        }
 
     # ---------------------------------------------------------------- control
     def stop(self, campaign_id):

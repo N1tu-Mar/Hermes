@@ -10,6 +10,7 @@ Before any pending step runs, the current file is copied next to itself as
 back over the original, and run the previous release (see docs/operations.md).
 Never edit an applied migration; append a new one.
 """
+
 import json
 import logging
 import shutil

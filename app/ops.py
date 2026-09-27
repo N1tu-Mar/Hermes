@@ -13,6 +13,7 @@
 
 Passphrases/passwords come from HERMES_BACKUP_PASSPHRASE / HERMES_NEW_PASSWORD or an interactive prompt.
 """
+
 import argparse
 import base64
 import getpass
@@ -89,8 +90,12 @@ def backup(data_root, out, passphrase):
     data_root, out = Path(data_root), Path(out)
     buf = io.BytesIO()
     with tempfile.TemporaryDirectory() as tmp, tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        meta = {"version": 1, "created_at": time.time(), "json_schema": contracts.SCHEMA_VERSION,
-                "sqlite_schema": len(cache_mod.MIGRATIONS)}
+        meta = {
+            "version": 1,
+            "created_at": time.time(),
+            "json_schema": contracts.SCHEMA_VERSION,
+            "sqlite_schema": len(cache_mod.MIGRATIONS),
+        }
         info = tarfile.TarInfo(META)
         body = json.dumps(meta).encode()
         info.size = len(body)
@@ -221,8 +226,9 @@ def check_schemas(data_root):
 # ---------------------------------------------------------------- CLI
 def main(argv=None):
     load_env()
-    ap = argparse.ArgumentParser(prog="python -m app.ops", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        prog="python -m app.ops", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("migrate")
     sub.add_parser("check-schemas")

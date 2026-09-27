@@ -6,6 +6,7 @@ are random 256-bit values stored only as SHA-256 hashes; provider secrets
 which never lives in the data directory or its backups. Users are created
 from the CLI (`python -m app.ops user-add`); there is no self-signup.
 """
+
 import hashlib
 import logging
 import os

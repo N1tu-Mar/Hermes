@@ -12,8 +12,16 @@ def test_defaults_are_local_and_valid(tmp_path):
 
 def test_all_problems_reported_together(tmp_path):
     with pytest.raises(ConfigError) as e:
-        load_config({"DATA_ROOT": str(tmp_path), "APP_PORT": "99999", "LOG_LEVEL": "LOUD",
-                     "OPENAI_API_KEY": "nope", "APP_HOST": "0.0.0.0", "RETENTION_DAYS": "x"})
+        load_config(
+            {
+                "DATA_ROOT": str(tmp_path),
+                "APP_PORT": "99999",
+                "LOG_LEVEL": "LOUD",
+                "OPENAI_API_KEY": "nope",
+                "APP_HOST": "0.0.0.0",
+                "RETENTION_DAYS": "x",
+            }
+        )
     assert len(e.value.problems) == 5
 
 
@@ -23,8 +31,14 @@ def test_remote_requires_https_secret_and_no_app_token(tmp_path):
         load_config({**base, "HERMES_PUBLIC_URL": "http://hermes.example", "APP_TOKEN": "x"})
     msg = str(e.value)
     assert "HTTPS" in msg and "HERMES_SECRET_KEY" in msg and "APP_TOKEN" in msg
-    cfg = load_config({**base, "HERMES_PUBLIC_URL": "https://hermes.example/",
-                       "HERMES_SECRET_KEY": Fernet.generate_key().decode(), "APP_HOST": "127.0.0.1"})
+    cfg = load_config(
+        {
+            **base,
+            "HERMES_PUBLIC_URL": "https://hermes.example/",
+            "HERMES_SECRET_KEY": Fernet.generate_key().decode(),
+            "APP_HOST": "127.0.0.1",
+        }
+    )
     assert cfg.remote and cfg.public_host == "hermes.example" and cfg.public_url == "https://hermes.example"
 
 

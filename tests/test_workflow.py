@@ -1,4 +1,5 @@
 """End-to-end campaign workflow in demo mode, including restart and shutdown recovery."""
+
 import asyncio
 
 from fastapi.testclient import TestClient
@@ -14,7 +15,10 @@ from tests.support import FakeGmailService, idle, make_campaign, wait
 def test_full_flow_research(env):
     client, svc, fake = env
     assert client.get("/api/campaigns", headers={"x-app-token": "wrong"}).status_code == 401
-    cid = make_campaign(client, "Rutgers/Princeton professors working on computational neurodevelopment who may work with undergraduates")
+    cid = make_campaign(
+        client,
+        "Rutgers/Princeton professors working on computational neurodevelopment who may work with undergraduates",
+    )
     client.post(f"/api/campaigns/{cid}/discover")
     p = wait(client, cid, lambda p: p["candidates"].get("discovered") and idle(p))
     view = client.get(f"/api/campaigns/{cid}").json()
@@ -23,7 +27,11 @@ def test_full_flow_research(env):
 
     client.post(f"/api/campaigns/{cid}/select", json={"candidate_ids": ids, "action": "select"})
     client.post(f"/api/campaigns/{cid}/research", json={})
-    p = wait(client, cid, lambda p: idle(p) and not p["candidates"].get("selected") and not p["candidates"].get("researching"))
+    p = wait(
+        client,
+        cid,
+        lambda p: idle(p) and not p["candidates"].get("selected") and not p["candidates"].get("researching"),
+    )
     # one verified, one missing email, one unreachable page isolated to its own candidate
     assert p["candidates"] == {"researched": 1, "needs_contact_review": 1, "research_failed": 1}
     calls_after_research = p["usage"]["api_calls"]
@@ -41,7 +49,9 @@ def test_full_flow_research(env):
     res = client.post(f"/api/campaigns/{cid}/gmail-drafts", json={"candidate_ids": [ids[0]]}).json()["results"]
     assert res[0]["result"].startswith("skipped") and not fake.store
 
-    client.patch(f"/api/campaigns/{cid}/drafts/{ids[0]}", json={"subject": d["subject"], "body": d["body"] + "\nThank you!"})
+    client.patch(
+        f"/api/campaigns/{cid}/drafts/{ids[0]}", json={"subject": d["subject"], "body": d["body"] + "\nThank you!"}
+    )
     assert client.post(f"/api/campaigns/{cid}/drafts/{ids[0]}/approve").status_code == 200
 
     # First Gmail attempt times out after Gmail stored it; retry reconciles instead of duplicating.
@@ -67,7 +77,10 @@ def test_full_flow_research(env):
 
 def test_speaker_outline_differs_and_followup_rule(env):
     client, svc, fake = env
-    cid = make_campaign(client, "Find startup founders and investors to speak at a Rutgers Entrepreneur Society panel about pre-seed investing")
+    cid = make_campaign(
+        client,
+        "Find startup founders and investors to speak at a Rutgers Entrepreneur Society panel about pre-seed investing",
+    )
     client.post(f"/api/campaigns/{cid}/discover")
     wait(client, cid, lambda p: p["candidates"].get("discovered") and idle(p))
     ids = [c["candidate_id"] for c in client.get(f"/api/campaigns/{cid}").json()["candidates"]]
@@ -108,7 +121,11 @@ def test_restart_resumes_without_repeating(tmp_path):
         assert client.get(f"/api/campaigns/{cid}/progress").json()["jobs"].get("interrupted") == 1
         r = client.post(f"/api/campaigns/{cid}/resume").json()
         assert r["research"]["candidates"] == [ids[1]]  # only the unfinished one
-        p = wait(client, cid, lambda p: idle(p) and p["candidates"].get("researched") == 1 and not p["candidates"].get("selected"))
+        p = wait(
+            client,
+            cid,
+            lambda p: idle(p) and p["candidates"].get("researched") == 1 and not p["candidates"].get("selected"),
+        )
         assert p["usage"]["api_calls"] == calls + 1
 
 

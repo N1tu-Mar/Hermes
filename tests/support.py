@@ -1,4 +1,5 @@
 """Shared test doubles and helpers (imported by conftest and test modules)."""
+
 import base64
 import email
 import time
@@ -83,7 +84,11 @@ def run_research_flow(client, cid):
     ids = [c["candidate_id"] for c in client.get(f"/api/campaigns/{cid}").json()["candidates"]]
     client.post(f"/api/campaigns/{cid}/select", json={"candidate_ids": ids, "action": "select"})
     client.post(f"/api/campaigns/{cid}/research", json={})
-    wait(client, cid, lambda p: idle(p) and not p["candidates"].get("selected") and not p["candidates"].get("researching"))
+    wait(
+        client,
+        cid,
+        lambda p: idle(p) and not p["candidates"].get("selected") and not p["candidates"].get("researching"),
+    )
     client.post(f"/api/campaigns/{cid}/drafts/generate", json={"candidate_ids": ids})
     wait(client, cid, lambda p: idle(p) and p["drafts"].get("needs_review"))
     return ids
