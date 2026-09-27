@@ -16,6 +16,7 @@ request_id = contextvars.ContextVar("request_id", default=None)
 job_id = contextvars.ContextVar("job_id", default=None)
 
 _PATTERNS = [
+    (re.compile(r"(?i)\bbearer\s+[\w.~+/=-]+"), "Bearer [redacted]"),
     # key/value pairs whose value is always sensitive: JSON, query strings, headers, kwargs
     (
         re.compile(
@@ -25,7 +26,6 @@ _PATTERNS = [
         ),
         r"\1[redacted]",
     ),
-    (re.compile(r"(?i)\bbearer\s+[\w.~+/=-]+"), "Bearer [redacted]"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}"), "[api-key]"),
     (re.compile(r"\bya29\.[\w-]+"), "[oauth-token]"),
     (re.compile(r"\b1//[\w-]{10,}"), "[oauth-token]"),
