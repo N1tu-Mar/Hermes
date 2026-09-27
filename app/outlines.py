@@ -50,7 +50,43 @@ TEMPLATES = {
         "tone": "short, polite, no pressure",
         "maximum_length": 110,
     },
+    "followup_nudge": {
+        "version": "followup_nudge.v1",
+        "audience": "someone who has not replied to an earlier email",
+        "sections": ["reference the earlier email by its subject and recorded send date (prior_contact only)",
+                     "restate the ask in one sentence", "make it easy to reply or decline"],
+        "maximum_length": 90,
+    },
+    "followup_final": {
+        "version": "followup_final.v1",
+        "audience": "someone who has not replied to two earlier emails",
+        "sections": ["brief last note referencing the earlier email (prior_contact only)",
+                     "restate the ask in one line", "gracious close; say this is the last note"],
+        "maximum_length": 80,
+    },
 }
+
+# Follow-up sequences per audience. delay_days counts from the previous recorded email
+# (the initial send for step 1, the previous follow-up's approval after that).
+# max_attempts caps generation attempts for a step; past that it is blocked for a human.
+SEQUENCES = {
+    "professor": [
+        {"delay_days": 7, "template": "followup_nudge", "tone": "respectful, brief, no pressure", "max_attempts": 2},
+        {"delay_days": 14, "template": "followup_final", "tone": "respectful, gracious close", "max_attempts": 2},
+    ],
+    "startup": [
+        {"delay_days": 4, "template": "followup_nudge", "tone": "direct, friendly, one short paragraph", "max_attempts": 2},
+        {"delay_days": 7, "template": "followup_final", "tone": "direct, easy to say no", "max_attempts": 2},
+    ],
+    "speaker": [
+        {"delay_days": 5, "template": "followup_nudge", "tone": "warm, professional, mention timing if supplied", "max_attempts": 2},
+        {"delay_days": 7, "template": "followup_final", "tone": "warm, no pressure", "max_attempts": 2},
+    ],
+    "mentor": [
+        {"delay_days": 7, "template": "followup_nudge", "tone": "warm, low-commitment ask", "max_attempts": 2},
+    ],
+}
+NO_RESPONSE_DAYS = 7  # after the last step is handled with no reply, outcome becomes no_response
 
 
 class OutlineBlocked(Exception):
@@ -67,6 +103,14 @@ def route_template(intake, followup=False):
     if subtype == "startup":
         return "startup"
     return "research_professor"  # research mode and research_professor subtype
+
+
+def sequence_for(intake):
+    subtype = intake.get("subtype")
+    if subtype == "speaker_mentor":
+        return "mentor" if re.search(r"\bmentor", (intake.get("raw_request") or "") + " " +
+                                     (intake.get("event_details") or ""), re.I) else "speaker"
+    return "startup" if subtype == "startup" else "professor"
 
 
 def _names(full):
@@ -111,3 +155,14 @@ def build_outline(intake, profile, sender_background, followup=False, earlier_in
         "tone": t["tone"],
         "maximum_length": t["maximum_length"],
     }
+
+
+def build_followup_outline(intake, profile, sender_background, step, prior_contact):
+    """Follow-up outline. prior_contact must describe a *recorded* earlier email; never inferred."""
+    if not prior_contact or not prior_contact.get("sent_on"):
+        raise OutlineBlocked("no recorded earlier email for this person; follow-up blocked")
+    base = build_outline(intake, profile, sender_background)  # same greeting, evidence, ask, sender rules
+    t = TEMPLATES[step["template"]]
+    return {**base, "template": step["template"], "template_version": t["version"], "audience": t["audience"],
+            "sections": t["sections"], "tone": step["tone"], "maximum_length": t["maximum_length"],
+            "prior_contact": prior_contact}

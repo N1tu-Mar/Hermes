@@ -124,9 +124,10 @@ class DemoModel:
         for s, name, org, role, interests, facts, email, ok in _all():
             if name in text:
                 url = f"{BASE}/{s}"
-                ev = [{"claim": f, "source_url": url} for f in facts]
+                ev = [{"claim": f, "source_url": url, "source_locator": "profile page"} for f in facts]
                 if not ok:  # unreachable page: model has nothing verifiable to cite
-                    ev = [{"claim": facts[0], "source_url": "https://unverified.example.net/guess"}]
+                    ev = [{"claim": facts[0], "source_url": "https://unverified.example.net/guess",
+                           "source_locator": None}]
                 return ({"contact_email": email, "contact_source_url": url if email else None,
                          "summary": f"{name} ({role}, {org}) works on {', '.join(interests)}.",
                          "research_interests": interests,
@@ -140,6 +141,9 @@ class DemoModel:
         facts = o["evidence"]
         sender = o["sender_context"].split(".")[0]
         lines = [o["greeting"], "", f"{sender}."]
+        prior = o.get("prior_contact")
+        if prior:
+            lines.append(f"I'm following up on my email from {prior['sent_on']} about \"{prior['original_subject']}\".")
         lines.append(f"I came across this on your page: {facts[0]['claim']}")
         if o.get("specific_connection"):
             lines.append(o["specific_connection"])
@@ -147,5 +151,5 @@ class DemoModel:
             lines.append(f"Event details: {o['event_details']}.")
         lines += [f"I wanted to ask {o['ask']}.", "", o["signoff"], sender.split(",")[0].replace("I am ", "").replace("I'm ", "")]
         subject = {"research_professor": "Undergraduate research interest", "startup": "Quick note from a Rutgers student",
-                   "speaker_invite": "Speaker invitation from Rutgers", "rsvp_followup": "Following up on our invitation"}[o["template"]]
+                   "speaker_invite": "Speaker invitation from Rutgers", "rsvp_followup": "Following up on our invitation"}.get(o["template"], "Following up")
         return {"subject": subject, "body": "\n".join(lines), "evidence_ids_used": [facts[0]["id"]]}

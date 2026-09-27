@@ -55,13 +55,16 @@ def build_service():
     else:
         demo.set_base(port)
         model, fetcher = demo.DemoModel(cache), demo.demo_fetcher(cache)
-    gmail = None
+    gmail, gmail_error = None, None
     try:
         from .gmail import GmailDrafts
         gmail = GmailDrafts.connect(interactive=False)
-    except Exception as e:
+    except Exception as e:  # expired/revoked token: run without Gmail and say so in the UI
+        gmail_error = str(e)
         logging.warning("Gmail not connected: %s", e)
-    return CampaignService(store, cache, model, fetcher, gmail)
+    svc = CampaignService(store, cache, model, fetcher, gmail)
+    svc.outreach.gmail_error = gmail_error
+    return svc
 
 
 def create_app(service=None, token=None):
@@ -109,7 +112,7 @@ def create_app(service=None, token=None):
     @app.get("/api/status")
     def status():
         s = svc()
-        return {"demo": getattr(s.model, "demo", False), "model": s.model.model, "gmail_connected": s.gmail is not None}
+        return {"demo": getattr(s.model, "demo", False), "model": s.model.model, **s.gmail_status()}
 
     @app.post("/api/parse")
     def parse(body: dict = Body(...)):
@@ -168,6 +171,26 @@ def create_app(service=None, token=None):
     @app.post("/api/campaigns/{cid}/gmail-drafts")
     async def gmail_drafts(cid: str, body: dict = Body(...)):
         return {"results": await svc().create_gmail_drafts(cid, body.get("candidate_ids") or [])}
+
+    @app.post("/api/campaigns/{cid}/gmail-sync")
+    async def gmail_sync(cid: str):
+        return await svc().sync_now(cid)
+
+    @app.post("/api/campaigns/{cid}/contacts/{cand}/outcome")
+    def set_outcome(cid: str, cand: str, body: dict = Body(...)):
+        return svc().set_outcome(cid, cand, body.get("outcome"), body.get("note") or "")
+
+    @app.post("/api/campaigns/{cid}/contacts/{cand}/sequence")
+    def sequence(cid: str, cand: str, body: dict = Body(...)):
+        return svc().sequence(cid, cand, body.get("action"))
+
+    @app.get("/api/campaigns/{cid}/followups")
+    def followups(cid: str):
+        return svc().followups(cid)
+
+    @app.post("/api/campaigns/{cid}/followups/{cand}/{step}/{action}")
+    async def followup_action(cid: str, cand: str, step: int, action: str, body: dict = Body(default={})):
+        return await svc().followup_action(cid, cand, step, action, body)
 
     @app.get("/api/campaigns/{cid}/export", response_class=PlainTextResponse)
     def export(cid: str):
