@@ -319,8 +319,10 @@ def create_app(service=None, token=None, config=None):
     @app.get("/auth/gmail/start")
     def gmail_start(request: Request):
         uid = _remote_user(request)
-        from .gmail import web_flow
+        from .gmail import credentials_paths, web_flow
 
+        if not credentials_paths()[0].exists():
+            raise Rejected("the operator has not configured a Gmail OAuth client (GMAIL_CREDENTIALS)")
         flow = web_flow(cfg.public_url + "/auth/gmail/callback")
         url, st = flow.authorization_url(access_type="offline", prompt="consent")
         pending = state["gmail_pending"]

@@ -6,19 +6,23 @@ const safeUrl = (u) => (/^https?:\/\//i.test(u || "") ? u : null);
 const LIST = ["organizations", "locations", "research_areas", "industries"];
 const SUBTYPE_LABEL = { research_professor: "Research professors", startup: "Startups", speaker_mentor: "Speakers & mentors" };
 
-// token: from ?t= once, then sessionStorage; strip from the address bar
+// Local mode: token from ?t= once, then sessionStorage; strip from the address bar.
+// Remote mode: session cookie (HttpOnly, set by the server) + CSRF token from /auth/session; no app token at all.
 const params = new URLSearchParams(location.search);
 if (params.get("t")) { sessionStorage.setItem("appToken", params.get("t")); history.replaceState(null, "", "/"); }
 const TOKEN = sessionStorage.getItem("appToken");
+const AUTH = { mode: "local", csrf: null };
 
 const state = { mode: null, subtype: null, cid: null, view: null, selected: new Set(), focus: null, poll: null, parsed: null };
 
-async function api(path, opts = {}) {
-  const res = await fetch(`/api${path}`, {
+async function api(path, opts = {}, prefix = "/api") {
+  const auth = AUTH.mode === "remote" ? { "X-CSRF-Token": AUTH.csrf || "" } : { "X-App-Token": TOKEN || "" };
+  const res = await fetch(`${prefix}${path}`, {
     ...opts,
-    headers: { "Content-Type": "application/json", "X-App-Token": TOKEN || "" },
+    headers: { "Content-Type": "application/json", ...auth },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
+  if (res.status === 401 && AUTH.mode === "remote" && prefix === "/api") { showLogin(); throw new Error("Please sign in again."); }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Request failed (${res.status})`);
@@ -250,6 +254,7 @@ async function renderDetail(id) {
   } else if (p && p.status !== "research_failed") {
     html += `<section><button class="small" data-act="draft">Draft email</button></section>`;
   }
+  html += `<section><button class="small ghost" data-act="forget">Delete this person</button></section>`;
   $("#detail").innerHTML = html;
 }
 
@@ -260,6 +265,11 @@ $("#detail").addEventListener("click", run(async (e) => {
   if (act === "refresh") await api(`${base}/research`, { method: "POST", body: { candidate_ids: [id], refresh: true } });
   if (act === "draft") await api(`${base}/drafts/generate`, { method: "POST", body: { candidate_ids: [id] } });
   if (act === "approve") { await api(`${base}/drafts/${id}/approve`, { method: "POST" }); toast("Approved."); }
+  if (act === "forget") {
+    if (!confirm("Delete this person from the campaign, including research and drafts?")) return;
+    await api(`${base}/candidates/${id}`, { method: "DELETE" });
+    state.focus = null; $("#detail").innerHTML = '<p class="empty">Person deleted.</p>'; return refresh();
+  }
   if (act === "invited") { await api(`${base}/drafts/${id}/mark-invited`, { method: "POST" }); toast("Invitation recorded; RSVP follow-up is now possible."); }
   await refresh(); await renderDetail(id);
 }));
@@ -308,6 +318,11 @@ $("#btn-gmail").addEventListener("click", run(async () => {
   $("#gmail-results").innerHTML = results.map((r) => `<div>${esc(r.candidate_id)}: ${esc(r.result)}${r.preview ? `<pre>${esc(r.preview)}</pre>` : ""}</div>`).join("");
   refresh();
 }));
+$("#btn-delete-campaign").addEventListener("click", run(async () => {
+  if (!confirm("Delete this campaign, its people, research, drafts, and activity? This cannot be undone.")) return;
+  await api(`/campaigns/${state.cid}`, { method: "DELETE" });
+  toast("Campaign deleted."); state.cid = null; await loadCampaignList(); show("home");
+}));
 $("#btn-export").addEventListener("click", run(async (e) => {
   e.preventDefault();
   const text = await api(`/campaigns/${state.cid}/export`);
@@ -329,5 +344,35 @@ async function loadCampaignList(select) {
   if (select) $("#campaign-select").value = select;
 }
 
-if (!TOKEN) { $("#token-warning").hidden = false; $$(".view").forEach((v) => (v.hidden = true)); }
-else run(loadCampaignList)();
+// ---------------------------------------------------------------- remote accounts
+function showLogin() { clearInterval(state.poll); $("#account").hidden = true; show("login"); }
+async function startRemote(session) {
+  AUTH.csrf = session.csrf;
+  $("#account").hidden = false; $("#account-name").textContent = session.user;
+  const a = await api("/account");
+  $("#account-state").textContent = `${a.openai_key_set ? "Your OpenAI key is set" : "No OpenAI key: demo data"} · Gmail ${a.gmail_connected ? "connected" : "not connected"}`;
+  show("home"); await loadCampaignList();
+}
+$("#login-form").addEventListener("submit", run(async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const s = await api("/login", { method: "POST", body: { username: f.username.value, password: f.password.value } }, "/auth");
+  f.password.value = ""; await startRemote(s);
+}));
+$("#btn-logout").addEventListener("click", run(async () => { await api("/logout", { method: "POST" }, "/auth"); location.reload(); }));
+$("#openai-form").addEventListener("submit", run(async (e) => {
+  e.preventDefault();
+  await api("/account/openai-key", { method: "PUT", body: { api_key: e.target.api_key.value } });
+  e.target.api_key.value = ""; toast("Key saved (encrypted)."); await startRemote({ user: $("#account-name").textContent, csrf: AUTH.csrf });
+}));
+$("#btn-clear-key").addEventListener("click", run(async () => { await api("/account/openai-key", { method: "DELETE" }); location.reload(); }));
+$("#btn-disconnect-gmail").addEventListener("click", run(async () => { await api("/account/gmail", { method: "DELETE" }); location.reload(); }));
+
+(async () => {
+  const res = await fetch("/auth/session");
+  const session = await res.json().catch(() => ({ mode: "local" }));
+  AUTH.mode = session.mode;
+  if (AUTH.mode === "remote") return session.user ? run(startRemote)(session) : showLogin();
+  if (!TOKEN) { $("#token-warning").hidden = false; $$(".view").forEach((v) => (v.hidden = true)); }
+  else run(loadCampaignList)();
+})();
