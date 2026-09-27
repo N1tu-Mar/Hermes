@@ -3,6 +3,7 @@
 Edit TEMPLATES to change structure/tone per audience. Bump a template's
 version when you change it: that invalidates earlier approvals.
 """
+import re
 
 TEMPLATES = {
     "research_professor": {
@@ -69,7 +70,8 @@ def route_template(intake, followup=False):
 
 
 def _names(full):
-    parts = [p for p in (full or "").replace(",", " ").split() if p.lower().rstrip(".") not in {"dr", "prof", "professor"}]
+    full = re.sub(r"\([^)]*\)", " ", full or "")  # drop "(demo)", "(she/her)" etc.
+    parts = [p for p in full.replace(",", " ").split() if p.lower().rstrip(".") not in {"dr", "prof", "professor"}]
     return (parts[0] if parts else "there"), (parts[-1] if parts else "")
 
 

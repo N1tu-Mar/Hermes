@@ -98,6 +98,9 @@ table.people { width: 100%; border-collapse: collapse; font-size: 14px; }
 .people tr[aria-selected="true"] { background: #e6ecf5; box-shadow: inset 3px 0 0 var(--ink); }
 .people tr.excluded td:not(:first-child) { opacity: .45; text-decoration: line-through; }
 .who { font-weight: 600; }
+.people td:nth-child(2) { min-width: 190px; }
+.people td:nth-child(4) { word-break: break-all; white-space: normal; min-width: 140px; }
+.people td:nth-child(5) { white-space: normal; }
 .org { color: var(--ink-soft); font-size: 12.5px; }
 .status { font: 12px var(--mono); white-space: nowrap; }
 .status.bad, .needs { color: var(--scarlet); }
@@ -111,6 +114,7 @@ table.people { width: 100%; border-collapse: collapse; font-size: 14px; }
   max-height: calc(100vh - 24px); overflow: auto; }
 .detail h3 { font-size: 22px; }
 .detail section { margin-top: 16px; }
+.detail section > .eyebrow { margin-bottom: 6px; }
 .claims { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
 .claims li { display: grid; grid-template-columns: auto 1fr; gap: 8px; font-size: 14px; }
 .cite { font: 500 11px var(--mono); background: var(--cite); padding: 1px 5px; border-radius: 2px; height: fit-content;

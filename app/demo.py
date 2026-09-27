@@ -140,7 +140,7 @@ class DemoModel:
         facts = o["evidence"]
         sender = o["sender_context"].split(".")[0]
         lines = [o["greeting"], "", f"{sender}."]
-        lines.append(f"I read that you {facts[0]['claim'][0].lower() + facts[0]['claim'][1:]}")
+        lines.append(f"I came across this on your page: {facts[0]['claim']}")
         if o.get("specific_connection"):
             lines.append(o["specific_connection"])
         if o.get("event_details"):
