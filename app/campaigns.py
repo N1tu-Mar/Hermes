@@ -374,6 +374,7 @@ class CampaignService:
 
     def mark_invited(self, campaign_id, cand_id):
         """User confirms they actually sent the invitation; enables an RSVP follow-up. Never inferred."""
+        self._require(campaign_id)
         d = self.cache.get_draft(campaign_id, cand_id, outlines.TEMPLATES["speaker_invite"]["version"])
         if not d or d["status"] not in ("approved", "gmail_draft_created"):
             raise Rejected("only an approved speaker invitation can be marked as sent")
