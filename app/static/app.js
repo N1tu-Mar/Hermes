@@ -224,7 +224,8 @@ async function renderDetail(id) {
       ? `<div class="contact ${p.email_verified_on_page ? "" : "needs"}">${esc(p.contact_email)} — ${p.email_verified_on_page ? `verified on ${link(p.contact_source_url, "page")}` : "NOT verified on a page; check before sending"}</div>`
       : `<div class="contact needs">No public email found. Look it up manually; nothing was guessed.</div>`;
     html += `<section><div class="eyebrow">Contact</div>${contact}</section>
-      <section><div class="eyebrow">Why they fit</div><p>${esc(p.fit_reason)}</p><p class="note">${esc(p.summary)}</p></section>
+      ${p.fit_reason ? `<section><div class="eyebrow">Why they fit</div><p>${esc(p.fit_reason)}</p><p class="note">${esc(p.summary)}</p></section>` : ""}
+      ${p.notes?.unverified_model_note?.summary ? `<section><div class="eyebrow">Unverified model note (not used in emails)</div><p class="note">${esc(p.notes.unverified_model_note.summary)}</p></section>` : ""}
       <section><div class="eyebrow">Evidence (${p.evidence.length})</div>
       <ol class="claims">${p.evidence.map((e, i) => `<li><a class="cite" href="${esc(safeUrl(e.source_url) || "#")}" target="_blank" rel="noopener noreferrer" aria-label="Source ${i + 1}">e${i}</a>
         <span>${esc(e.claim)}<span class="src">${esc(e.source_url)} · ${esc(e.retrieved_at)}</span></span></li>`).join("") || "<li class='needs'>No sourced claims. This person can't be personalized yet.</li>"}</ol>
@@ -246,7 +247,7 @@ async function renderDetail(id) {
           ${d.template_version.startsWith("speaker_invite") && ["approved", "gmail_draft_created"].includes(d.status)
             ? `<button type="button" class="small ghost" data-act="invited" ${d.invited_at ? "disabled" : ""}>${d.invited_at ? "Invitation marked sent" : "I sent this invitation"}</button>` : ""}
         </div></form>`}</section>`;
-  } else if (p) {
+  } else if (p && p.status !== "research_failed") {
     html += `<section><button class="small" data-act="draft">Draft email</button></section>`;
   }
   $("#detail").innerHTML = html;

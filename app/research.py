@@ -183,10 +183,8 @@ async def discover(model, campaign_id, intake, limit, existing_keys=()):
 async def research_candidate(model, fetcher, campaign_id, intake, candidate):
     """Research ONE compact candidate record. Returns a validated profile dict."""
     pages, fetch_errors = {}, []
-    for url in [candidate.get("profile_url"), candidate.get("discovery_source_url")][:PAGES_PER_PERSON]:
-        url = normalize_url(url)
-        if not url or url in pages:
-            continue
+    urls = dict.fromkeys(filter(None, map(normalize_url, [candidate.get("profile_url"), candidate.get("discovery_source_url")])))
+    for url in list(urls)[:PAGES_PER_PERSON]:
         try:
             pages[url], _ = await fetcher.fetch(url)
         except FetchError as e:
@@ -226,8 +224,11 @@ def finalize_profile(candidate, data, known_urls, pages, fetch_errors=()):
         csrc = None
 
     status = "researched" if (evidence and verified) else "needs_contact_review"
+    summary, fit = (data.get("summary") or "")[:600], (data.get("fit_reason") or "")[:400]
+    unverified = None
     if not evidence:
-        status = "research_failed"
+        # Nothing sourced: the model's prose is an unverified note, not a fact.
+        status, unverified, summary, fit = "research_failed", {"summary": summary, "fit_reason": fit}, "", ""
     return {
         "candidate_id": candidate["candidate_id"],
         "name": candidate["name"],
@@ -236,11 +237,12 @@ def finalize_profile(candidate, data, known_urls, pages, fetch_errors=()):
         "contact_email": email,
         "contact_source_url": csrc,
         "email_verified_on_page": verified,
-        "summary": (data.get("summary") or "")[:600],
+        "summary": summary,
         "research_interests": [s[:80] for s in (data.get("research_interests") or [])][:8],
-        "fit_reason": (data.get("fit_reason") or "")[:400],
+        "fit_reason": fit,
         "evidence": evidence,
         "researched_at": ts,
         "status": status,
-        "notes": {"dropped_unsourced_claims": dropped, "fetch_errors": list(fetch_errors)[:3]},
+        "notes": {"dropped_unsourced_claims": dropped, "fetch_errors": list(fetch_errors)[:3],
+                  "unverified_model_note": unverified},
     }

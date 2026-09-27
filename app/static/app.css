@@ -108,6 +108,7 @@ table.people { width: 100%; border-collapse: collapse; font-size: 14px; }
 .gmail-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px; border-top: 1px solid var(--rule); }
 .gmail-bar .note { margin-right: auto; }
 #gmail-results { padding: 0 10px 10px; }
+#gmail-results pre { white-space: pre-wrap; font: 12px/1.5 var(--mono); background: var(--paper); padding: 10px; border-radius: 4px; }
 
 /* detail: the dossier */
 .detail { background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; padding: 18px; position: sticky; top: 12px;
@@ -139,6 +140,7 @@ table.people { width: 100%; border-collapse: collapse; font-size: 14px; }
 @media (max-width: 560px) {
   .row { grid-template-columns: 1fr; }
   .people th:nth-child(4), .people td:nth-child(4) { display: none; }
+  .status { white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
