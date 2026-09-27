@@ -21,6 +21,7 @@ class Coordinator:
         self.tasks = []
 
     def start(self):
+        self.loop = asyncio.get_running_loop()
         for lane, n in self.workers.items():
             for _ in range(n):
                 self.tasks.append(asyncio.create_task(self._run(lane)))
@@ -38,7 +39,8 @@ class Coordinator:
         job_id = f"job_{secrets.token_hex(5)}"
         self.cache.put_job(job_id, campaign_id, kind, candidate_id, "queued")
         self.stopped.discard(campaign_id)
-        asyncio.create_task(self.queues[self.lane(kind)].put((job_id, campaign_id, kind, candidate_id)))
+        # thread-safe: sync route handlers run in a threadpool
+        asyncio.run_coroutine_threadsafe(self.queues[self.lane(kind)].put((job_id, campaign_id, kind, candidate_id)), self.loop)
         return job_id
 
     async def _run(self, lane):
