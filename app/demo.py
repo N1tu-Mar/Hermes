@@ -146,6 +146,8 @@ class DemoModel:
         if o.get("event_details"):
             lines.append(f"Event details: {o['event_details']}.")
         lines += [f"I wanted to ask {o['ask']}.", "", o["signoff"], sender.split(",")[0].replace("I am ", "").replace("I'm ", "")]
-        subject = {"research_professor": "Undergraduate research interest", "startup": "Quick note from a Rutgers student",
-                   "speaker_invite": "Speaker invitation from Rutgers", "rsvp_followup": "Following up on our invitation"}[o["template"]]
+        subject = o.get("template_subject") or {
+            "research_professor": "Undergraduate research interest", "startup": "Quick note from a Rutgers student",
+            "speaker_invite": "Speaker invitation from Rutgers", "rsvp_followup": "Following up on our invitation",
+        }.get(o["template"], "A quick note from Rutgers")
         return {"subject": subject, "body": "\n".join(lines), "evidence_ids_used": [facts[0]["id"]]}

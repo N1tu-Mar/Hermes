@@ -17,13 +17,18 @@ def credentials_paths():
     return cred, token
 
 
-def build_message(to, subject, body, key):
+def build_message(to, subject, body, key, attachments=None):
     msg = EmailMessage()
     if to:
         msg["To"] = to
     msg["Subject"] = subject
     msg["X-Outreach-Key"] = key
     msg.set_content(body)
+    for item in attachments or []:
+        media = item["media_type"].split("/", 1)
+        if len(media) != 2:
+            raise ValueError(f"invalid attachment media type: {item['media_type']}")
+        msg.add_attachment(item["content"], maintype=media[0], subtype=media[1], filename=item["filename"])
     return {"message": {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}}
 
 
@@ -55,8 +60,9 @@ class GmailDrafts:
         os.chmod(token_path, 0o600)
         return cls(build("gmail", "v1", credentials=creds, cache_discovery=False))
 
-    def create(self, to, subject, body, key):
-        res = self.svc.users().drafts().create(userId="me", body=build_message(to, subject, body, key)).execute()
+    def create(self, to, subject, body, key, attachments=None):
+        res = self.svc.users().drafts().create(
+            userId="me", body=build_message(to, subject, body, key, attachments)).execute()
         return res["id"]
 
     def exists(self, draft_id):
@@ -66,7 +72,7 @@ class GmailDrafts:
         except Exception:
             return False
 
-    def find_by_key(self, key, scan=50):
+    def find_by_key(self, key, scan=100):
         """Reconcile: look through recent drafts for our header. Bounded scan."""
         res = self.svc.users().drafts().list(userId="me", maxResults=scan).execute()
         for d in res.get("drafts", []):

@@ -12,10 +12,20 @@
 <header class="bar">
   <a class="brand" href="#" data-go="home">Outreach Desk</a>
   <span id="mode-badge" class="badge" hidden></span>
+  <button id="btn-library" class="top-link">Messaging library</button>
+  <button id="btn-analytics" class="top-link">Analytics</button>
+  <button id="btn-bell" class="top-link" aria-expanded="false" aria-controls="notif-panel">Notifications
+    <span id="notif-count" class="count" hidden></span></button>
   <label class="switcher">Campaign
     <select id="campaign-select"><option value="">New campaign</option></select>
   </label>
 </header>
+<aside id="notif-panel" class="notif-panel" aria-label="Notifications" hidden>
+  <div class="notif-head"><b>Notifications</b>
+    <label class="check"><input type="checkbox" id="notif-dismissed"> show dismissed</label>
+    <button id="notif-read-all" class="small ghost">Mark all read</button></div>
+  <ol id="notif-list"></ol>
+</aside>
 
 <main>
   <p id="token-warning" class="banner warn" hidden>
@@ -73,6 +83,7 @@
         </div>
         <label>Research areas<input name="research_areas"></label>
         <label>Industries<input name="industries"></label>
+        <label>User-supplied source URLs <small>comma separated; HTTP(S), up to 10</small><input name="source_urls"></label>
         <label>Other criteria<input name="other_criteria"></label>
         <label>Your ask<input name="outreach_goal" placeholder="e.g. whether you have room for an undergraduate researcher"></label>
         <label data-for="speaker_mentor">Event details <small>organization, format, timing, remote option</small><input name="event_details"></label>
@@ -108,6 +119,36 @@
 
     <div id="progress" class="progress" aria-live="polite"></div>
 
+    <details class="workspace-tools">
+      <summary>Campaign messaging, attachments &amp; automation rules</summary>
+      <div class="tool-grid">
+        <section><div class="eyebrow">Reusable content &amp; attachments</div>
+          <label>Template version<select id="campaign-template"><option value="">Automatic default</option></select></label>
+          <div id="campaign-assets" class="asset-picker"></div>
+          <button id="btn-save-assets" class="small">Save campaign assets</button></section>
+        <section><div class="eyebrow">Campaign rule</div>
+          <form id="rule-form" class="compact-form">
+            <select name="kind"><option value="draft_verified">Draft only for verified contacts</option><option value="research_next">Research the next candidates</option><option value="exclude_contacted">Exclude previously contacted people</option><option value="followup_no_reply">Prepare follow-ups for no reply</option><option value="require_manual_review">Require manual review</option></select>
+            <input name="limit" type="number" min="1" max="100" value="10" aria-label="Rule limit">
+            <button class="small" type="submit">Save rule</button>
+          </form><div id="campaign-rules"></div></section>
+      </div>
+    </details>
+
+    <details class="ranking-controls">
+      <summary>Ranking weights</summary>
+      <form id="ranking-form" class="weight-grid">
+        <label>Topic<input name="topical_relevance" type="number" min="0" max="100"></label>
+        <label>Organization<input name="organization_fit" type="number" min="0" max="100"></label>
+        <label>Role<input name="role_fit" type="number" min="0" max="100"></label>
+        <label>Geography<input name="geographic_fit" type="number" min="0" max="100"></label>
+        <label>Contact<input name="contact_availability" type="number" min="0" max="100"></label>
+        <label>Evidence<input name="evidence_quality" type="number" min="0" max="100"></label>
+        <label>Prior contact<input name="prior_contact_state" type="number" min="0" max="100"></label>
+        <button class="small" type="submit">Apply weights</button>
+      </form>
+    </details>
+
     <div class="work-grid">
       <div class="table-wrap">
         <div class="table-tools">
@@ -117,10 +158,13 @@
           <button id="btn-followup" class="small" hidden>Draft RSVP follow-ups</button>
           <button id="btn-exclude" class="ghost small">Exclude</button>
           <button id="btn-include" class="ghost small">Restore</button>
+          <button id="btn-compare" class="ghost small">Compare (2–5)</button>
+          <select id="sort-candidates" aria-label="Sort candidates"><option value="score">Score: high to low</option><option value="name">Name</option><option value="status">Research status</option></select>
+          <select id="filter-candidates" aria-label="Filter candidates"><option value="all">All candidates</option><option value="contact">Has contact</option><option value="verified">Verified contact</option><option value="evidence">Has evidence</option><option value="missing">Missing fields</option><option value="pinned">Pinned</option></select>
         </div>
         <table class="people">
-          <thead><tr><th></th><th>Person</th><th>Research</th><th>Email</th><th>Draft</th></tr></thead>
-          <tbody id="rows"><tr><td colspan="5" class="empty">No people yet. Discovery runs after you confirm the request.</td></tr></tbody>
+          <thead><tr><th></th><th>Person</th><th>Score</th><th>Research</th><th>Email</th><th>Draft</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="6" class="empty">No people yet. Discovery runs after you confirm the request.</td></tr></tbody>
         </table>
         <div class="gmail-bar">
           <span id="gmail-state" class="note"></span>
@@ -133,12 +177,71 @@
       <aside id="detail" class="detail" aria-live="polite">
         <p class="empty">Pick a person to see sources and their draft.</p>
       </aside>
+      <aside id="comparison" class="detail comparison" hidden aria-live="polite"></aside>
     </div>
 
     <details class="activity">
       <summary>Recent activity</summary>
       <ol id="events"></ol>
     </details>
+  </section>
+
+  <!-- Reusable messaging library -->
+  <section id="view-library" class="view" hidden>
+    <div class="work-head"><div><div class="eyebrow">HERMES workspace</div><h2>Messaging library</h2></div>
+      <button class="ghost" data-go="home">Back</button></div>
+    <div class="library-grid">
+      <section class="panel"><h3>Templates</h3><p class="note">Every save creates an immutable version and invalidates affected approvals.</p>
+        <div id="template-list"></div>
+        <form id="template-form" class="compact-form">
+          <input type="hidden" name="template_id"><label>Name<input name="name" required></label>
+          <label>Category<select name="category"><option>professor_outreach</option><option>startup_outreach</option><option>speaker_invitation</option><option>mentorship_request</option><option>rsvp_followup</option><option>general_followup</option></select></label>
+          <label>Subject<input name="subject" required></label><label>Instructions / body<textarea name="body" rows="6" required></textarea></label>
+          <label>Change note<input name="change_note"></label><div class="draft-actions"><button class="primary small" type="submit">Save version</button><button id="btn-template-new" class="ghost small" type="button">New</button><button id="btn-template-preview" class="ghost small" type="button">Preview</button><button id="btn-template-duplicate" class="ghost small" type="button">Duplicate</button><button id="btn-template-archive" class="ghost small" type="button">Archive</button></div>
+        </form><pre id="template-preview" class="preview"></pre><div id="template-history" class="note"></div>
+      </section>
+      <section class="panel"><h3>Sender identities &amp; reusable content</h3>
+        <form id="identity-form" class="compact-form"><label>Display name<input name="display_name" required></label><label>Biography<textarea name="biography" required></textarea></label><label>Signature<input name="signature"></label><button class="small">Add sender</button></form>
+        <form id="content-form" class="compact-form"><label>Sender<select name="identity_id"><option value="">Any sender</option></select></label><label>Kind<select name="kind"><option>signature</option><option>event_description</option><option>club_description</option><option>personal_introduction</option><option>call_to_action</option><option>supporting_links</option></select></label><label>Name<input name="name" required></label><label>Content<textarea name="body" required></textarea></label><button class="small">Add content</button></form>
+        <div id="content-list" class="library-list"></div>
+      </section>
+      <section class="panel"><h3>Attachments</h3><p class="note">PDF, DOC/DOCX, or PPT/PPTX; maximum 10 MB. Files stay in the configured local data directory.</p>
+        <form id="attachment-form" class="compact-form"><label>Sender<select name="identity_id"><option value="">Any sender</option></select></label><label>Kind<select name="kind"><option value="resume">Resume</option><option value="club_deck">Club deck</option><option value="event_brief">Event brief</option><option value="one_pager">One-pager</option></select></label><label>File<input name="file" type="file" accept=".pdf,.doc,.docx,.ppt,.pptx" required></label><button class="small">Add attachment</button></form>
+        <div id="attachment-list" class="library-list"></div>
+      </section>
+    </div>
+  </section>
+
+  <!-- 5. Analytics -->
+  <section id="view-analytics" class="view" hidden>
+    <h2>Analytics</h2>
+    <p class="lede">Counts come from stored records. <b>unknown</b> means HERMES can't know; 0 means none happened.
+      Outcomes after sending are what you recorded — no tracking pixels or open tracking.</p>
+    <form id="an-filters" class="filters">
+      <label>Campaign<select name="campaign_id"><option value="">All campaigns</option></select></label>
+      <label>From<input type="date" name="start"></label>
+      <label>To<input type="date" name="end"></label>
+      <label>Break down by<select name="group_by">
+        <option value="campaign">Campaign</option><option value="campaign_type">Campaign type</option>
+        <option value="sender">Sender identity</option><option value="template">Template version</option>
+        <option value="organization">Organization</option></select></label>
+      <div class="actions">
+        <button type="button" class="small ghost" data-export="aggregate">Export aggregate CSV</button>
+        <button type="button" class="small ghost" data-export="rows">Export contacts CSV</button>
+      </div>
+    </form>
+    <div class="an-grid">
+      <section class="panel"><h3>Campaign funnel</h3><p class="note">Contacts that reached each stage. Pick a stage to list them.</p>
+        <ol id="an-funnel" class="funnel"></ol></section>
+      <section class="panel"><h3>Rates</h3><dl id="an-rates" class="tiles"></dl>
+        <h3>Usage</h3><dl id="an-usage" class="tiles"></dl><p id="an-notes" class="note"></p></section>
+    </div>
+    <section class="panel"><h3 id="an-breakdown-title">Breakdown</h3><div class="scroll"><table class="an-table" id="an-breakdown"></table></div></section>
+    <section class="panel"><h3 id="an-contacts-title">Contacts</h3><div class="scroll"><table class="an-table" id="an-contacts"></table></div></section>
+    <div class="an-grid">
+      <section class="panel"><h3>Failures</h3><ol id="an-failures" class="feed"></ol></section>
+      <section class="panel"><h3>Recent activity</h3><ol id="an-activity" class="feed"></ol></section>
+    </div>
   </section>
 </main>
 

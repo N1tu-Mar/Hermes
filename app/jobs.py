@@ -18,6 +18,7 @@ class Coordinator:
         self.queues = {"research": asyncio.Queue(queue_size), "write": asyncio.Queue(queue_size)}
         self.workers = {"research": research_workers, "write": 1}
         self.stopped = set()
+        self.on_finish = None  # optional fn(job_id, campaign_id, kind, status, error) for notifications
         self.tasks = []
 
     def start(self):
@@ -54,13 +55,23 @@ class Coordinator:
                 self.cache.put_job(job_id, campaign_id, kind, candidate_id, "running")
                 await self.handlers[kind](campaign_id, candidate_id)
                 self.cache.put_job(job_id, campaign_id, kind, candidate_id, "done")
+                self._finished(job_id, campaign_id, kind, "done", None)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # one failure never blocks the batch
                 log.exception("job %s failed", job_id)
-                self.cache.put_job(job_id, campaign_id, kind, candidate_id, "failed", f"{type(e).__name__}: {str(e)[:200]}")
+                error = f"{type(e).__name__}: {str(e)[:200]}"
+                self.cache.put_job(job_id, campaign_id, kind, candidate_id, "failed", error)
+                self._finished(job_id, campaign_id, kind, "failed", error)
             finally:
                 q.task_done()
+
+    def _finished(self, *args):
+        try:
+            if self.on_finish:
+                self.on_finish(*args)
+        except Exception:
+            log.exception("on_finish hook failed")
 
     def stop(self, campaign_id):
         self.stopped.add(campaign_id)

@@ -13,6 +13,7 @@ WRITER_INSTRUCTIONS = (
     "You write one short, natural, specific outreach email from a Rutgers student. "
     "Use ONLY the facts provided in `evidence`; do not add publications, dates, affiliations, "
     "relationships, or compliments that are not stated there. No URLs, no placeholders like [Name]. "
+    "When template_prompt and template_subject are present, treat them as the selected versioned template. "
     "Follow the outline sections in order, respect maximum_length words for the body, and sign with the sender's name "
     "if given in sender_context. Return which evidence ids you used."
 )

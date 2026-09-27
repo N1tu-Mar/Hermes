@@ -13,9 +13,9 @@ SUBTYPES = {None, "startup", "research_professor", "speaker_mentor"}
 INTAKE_FIELDS = (
     "mode", "subtype", "raw_request", "organizations", "locations",
     "research_areas", "industries", "work_style", "other_criteria",
-    "outreach_goal", "event_details", "sender_background",
+    "outreach_goal", "event_details", "sender_background", "source_urls",
 )
-LIST_FIELDS = {"organizations", "locations", "research_areas", "industries"}
+LIST_FIELDS = {"organizations", "locations", "research_areas", "industries", "source_urls"}
 
 CANDIDATE_STATES = {
     "discovered", "selected", "researching", "researched",
@@ -24,7 +24,8 @@ CANDIDATE_STATES = {
 DRAFT_STATES = {"generated", "needs_review", "approved", "gmail_draft_created", "blocked"}
 
 CANDIDATE_KEYS = ("candidate_id", "name", "organization", "role",
-                  "profile_url", "discovery_source_url", "status")
+                  "profile_url", "discovery_source_url", "status", "ranking",
+                  "pinned", "manual_score_adjustment")
 PROFILE_KEYS = ("candidate_id", "name", "organization", "role", "contact_email",
                 "contact_source_url", "email_verified_on_page", "summary",
                 "research_interests", "fit_reason", "evidence", "researched_at", "status")
@@ -55,6 +56,8 @@ def clean_intake(data):
             if isinstance(v, str):
                 v = [s.strip() for s in v.split(",") if s.strip()]
             v = [str(s).strip() for s in (v or []) if str(s).strip()]
+            if k == "source_urls":
+                v = list(dict.fromkeys(u for u in map(normalize_url, v) if u))[:10]
         elif v is not None and not isinstance(v, str):
             v = str(v)
         out[k] = v
@@ -89,8 +92,12 @@ def profile_problems(pr):
     for e in pr.get("evidence") or []:
         if not (isinstance(e, dict) and e.get("claim") and normalize_url(e.get("source_url")) and e.get("retrieved_at")):
             p.append(f"unsourced evidence {e!r:.80}")
+        if e.get("provenance") == "manual_correction" and e.get("web_verified"):
+            p.append("manual evidence mislabeled as web verified")
     if pr.get("email_verified_on_page") and not (pr.get("contact_email") and pr.get("contact_source_url")):
         p.append("email marked verified without email and source")
+    if pr.get("provenance", {}).get("contact_email", {}).get("kind") == "manual_correction" and pr.get("email_verified_on_page"):
+        p.append("manually corrected email mislabeled as web verified")
     if pr.get("contact_email") and not EMAIL_RE.fullmatch(pr["contact_email"]):
         p.append("malformed contact_email")
     return p
