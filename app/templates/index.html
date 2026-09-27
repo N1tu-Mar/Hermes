@@ -119,21 +119,39 @@
           <button id="btn-include" class="ghost small">Restore</button>
         </div>
         <table class="people">
-          <thead><tr><th></th><th>Person</th><th>Research</th><th>Email</th><th>Draft</th></tr></thead>
-          <tbody id="rows"><tr><td colspan="5" class="empty">No people yet. Discovery runs after you confirm the request.</td></tr></tbody>
+          <thead><tr><th></th><th>Person</th><th>Research</th><th>Email</th><th>Draft</th><th>Outcome</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="6" class="empty">No people yet. Discovery runs after you confirm the request.</td></tr></tbody>
         </table>
         <div class="gmail-bar">
           <span id="gmail-state" class="note"></span>
+          <button id="btn-sync" class="ghost">Sync Gmail</button>
           <button id="btn-gmail" class="primary">Create Gmail drafts for approved</button>
           <a id="btn-export" class="ghost button" target="_blank">Export approved</a>
         </div>
         <div id="gmail-results" class="note"></div>
+        <p id="gmail-scope" class="note scope-note"></p>
       </div>
 
       <aside id="detail" class="detail" aria-live="polite">
         <p class="empty">Pick a person to see sources and their draft.</p>
       </aside>
     </div>
+
+    <section class="queue" aria-labelledby="queue-title">
+      <div class="queue-head">
+        <h3 id="queue-title">Follow-up queue</h3>
+        <div class="queue-tabs" role="group" aria-label="Filter follow-ups">
+          <button class="chip small" data-q="due" aria-pressed="true">Due</button>
+          <button class="chip small" data-q="upcoming">Upcoming</button>
+          <button class="chip small" data-q="paused">Paused</button>
+          <button class="chip small" data-q="blocked">Blocked</button>
+          <button class="chip small" data-q="completed">Completed</button>
+        </div>
+      </div>
+      <p class="note">Follow-ups start only after an email is recorded as sent (Gmail's Sent label or "I sent it").
+        Every follow-up waits here for review; a reply, bounce, decline, meeting, or stop cancels the rest.</p>
+      <div id="queue-list"></div>
+    </section>
 
     <details class="activity">
       <summary>Recent activity</summary>

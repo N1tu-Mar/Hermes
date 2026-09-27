@@ -11,7 +11,10 @@ const params = new URLSearchParams(location.search);
 if (params.get("t")) { sessionStorage.setItem("appToken", params.get("t")); history.replaceState(null, "", "/"); }
 const TOKEN = sessionStorage.getItem("appToken");
 
-const state = { mode: null, subtype: null, cid: null, view: null, selected: new Set(), focus: null, poll: null, parsed: null };
+const state = { mode: null, subtype: null, cid: null, view: null, selected: new Set(), focus: null, poll: null, parsed: null, q: "due" };
+const OUTCOMES = ["awaiting_reply", "replied", "interested", "meeting_booked", "declined", "bounced", "no_response", "closed"];
+const label = (s) => String(s ?? "").replaceAll("_", " ");
+const day = (ts) => new Date(ts * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
 async function api(path, opts = {}) {
   const res = await fetch(`/api${path}`, {
@@ -141,10 +144,16 @@ async function refresh() {
   $("#btn-followup").hidden = it.subtype !== "speaker_mentor";
   $("#mode-badge").hidden = false;
   $("#mode-badge").textContent = view.demo ? "DEMO DATA" : "LIVE";
-  $("#gmail-state").textContent = view.gmail_connected ? "Gmail connected · creates drafts only, never sends"
+  $("#gmail-state").textContent = view.gmail_error ? view.gmail_error
+    : view.gmail_connected ? `Gmail connected · creates drafts only, never sends${view.gmail_sync ? " · reply tracking on" : ""}`
     : "Gmail not connected · approved drafts can be exported instead";
+  $("#gmail-state").classList.toggle("needs", !!view.gmail_error);
+  $("#btn-sync").disabled = !view.gmail_sync;
+  $("#gmail-scope").textContent = view.gmail_sync
+    ? "Reply tracking reads only labels and headers (sender, subject, date; never message bodies) of threads HERMES created, using the gmail.metadata scope. Nothing else in your inbox is read or stored."
+    : view.gmail_connected ? "Reply tracking is off: your Gmail token predates the gmail.metadata scope. Run python -m app.gmail to grant it (headers/labels of HERMES threads only; no bodies)." : "";
   $("#btn-export").href = "#";
-  renderProgress(prog); renderRows(view.candidates);
+  renderProgress(prog); renderRows(view.candidates); await renderQueue();
   if (state.focus && !$("#detail").contains(document.activeElement)) await renderDetail(state.focus);
 }
 
@@ -179,7 +188,8 @@ function renderRows(cands) {
       <td><div class="who">${esc(c.name)}</div><div class="org">${esc(c.role)}${c.role && c.organization ? " · " : ""}${esc(c.organization)}</div></td>
       <td class="status ${cls}" title="${esc(c.error || "")}">${esc(label)}</td>
       <td class="status">${email}</td>
-      <td class="status">${draft}</td></tr>`;
+      <td class="status">${draft}</td>
+      <td class="status ${["replied", "interested", "meeting_booked"].includes(c.outcome) ? "ok" : ["bounced", "declined"].includes(c.outcome) ? "bad" : ""}">${c.do_not_contact ? '<span class="needs">do not contact</span>' : esc(label(c.outcome) || "—")}${c.sequence_state === "paused" ? " · paused" : ""}</td></tr>`;
   }).join("");
 }
 
@@ -210,7 +220,7 @@ function focusRow(id) {
 }
 
 async function renderDetail(id) {
-  const { candidate: c, profile: p, draft: d } = await api(`/campaigns/${state.cid}/candidates/${id}`);
+  const { candidate: c, profile: p, draft: d, contact: o, timeline } = await api(`/campaigns/${state.cid}/candidates/${id}`);
   const link = (u, text) => (safeUrl(u) ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(text || u)}</a>` : esc(text || "—"));
   let html = `<div class="eyebrow">${esc(c.candidate_id)} · ${esc(c.status.replaceAll("_", " "))}</div>
     <h3>${esc(c.name)}</h3><div class="org">${esc(c.role)} · ${esc(c.organization)}</div>
@@ -250,7 +260,57 @@ async function renderDetail(id) {
   } else if (p && p.status !== "research_failed") {
     html += `<section><button class="small" data-act="draft">Draft email</button></section>`;
   }
+  html += renderOutreach(o, timeline);
   $("#detail").innerHTML = html;
+}
+
+function renderOutreach(o, timeline) {
+  o = o || {};
+  const sent = o.sent_at ? `Sent ${day(o.sent_at)} (${o.sent_source === "gmail" ? "seen in Gmail Sent" : "recorded by you"})`
+    : o.gmail_thread_id ? "Draft is in Gmail; not sent yet. Sync Gmail after you send it." : "No email recorded as sent.";
+  const seq = o.do_not_contact ? "do not contact" : o.sequence_state || "not started";
+  return `<section><div class="eyebrow">Outcome · sequence ${esc(seq)}</div>
+    <p class="note">${esc(sent)}${o.sync_error ? ` <span class="needs">${esc(o.sync_error)}</span>` : ""}</p>
+    <form class="outcome-form">
+      <label>Outcome<select name="outcome">${OUTCOMES.map((x) => `<option value="${x}" ${o.outcome === x ? "selected" : ""}>${label(x)}</option>`).join("")}</select></label>
+      <label>Note <small>kept in the audit trail</small><input name="note" maxlength="300"></label>
+      <button type="submit" class="small">Record</button>
+    </form>
+    <div class="seq-actions">
+      ${o.sent_at ? "" : '<button class="small ghost" data-act="seq" data-seq="mark_sent">I sent it</button>'}
+      ${o.sequence_state === "paused" ? '<button class="small ghost" data-act="seq" data-seq="resume">Resume follow-ups</button>'
+        : o.sequence_state === "active" ? '<button class="small ghost" data-act="seq" data-seq="pause">Pause follow-ups</button>' : ""}
+      ${o.sequence_state && o.sequence_state !== "stopped" ? '<button class="small ghost" data-act="seq" data-seq="stop">Stop follow-ups</button>' : ""}
+      ${o.do_not_contact ? "" : '<button class="small ghost" data-act="seq" data-seq="do_not_contact">Do not contact</button>'}
+    </div></section>
+    <section><div class="eyebrow">Timeline</div>
+    <ol class="timeline">${(timeline || []).map((e) => `<li>${esc(day(e.at))} · <b>${esc(label(e.kind))}</b> ${esc(e.detail)} <span>(${esc(e.source)})</span></li>`).join("") || "<li>Nothing recorded yet.</li>"}</ol></section>`;
+}
+
+async function renderQueue() {
+  if ($("#queue-list").contains(document.activeElement)) return;  // don't clobber an edit in progress
+  const groups = await api(`/campaigns/${state.cid}/followups`);
+  $$(".queue-tabs .chip").forEach((b) => { b.setAttribute("aria-pressed", b.dataset.q === state.q); b.textContent = `${b.dataset.q[0].toUpperCase()}${b.dataset.q.slice(1)} (${groups[b.dataset.q].length})`; });
+  const names = Object.fromEntries((state.view?.candidates || []).map((c) => [c.candidate_id, c.name]));
+  const items = groups[state.q];
+  $("#queue-list").innerHTML = items.map((f) => {
+    const id = `${esc(f.candidate_id)}/${f.step}`;
+    const editable = ["needs_review", "approved"].includes(f.status);
+    return `<div class="fu" data-fu="${id}">
+      <div><b>${esc(names[f.candidate_id] || f.candidate_id)}</b> · follow-up ${f.step + 1} · ${esc(label(f.template))} ·
+        <span class="status">${esc(label(f.status))}</span> · due ${esc(day(f.due_at))}</div>
+      <div class="note">Earlier email on record: “${esc(f.prior.subject || "—")}”, sent ${esc(f.prior.sent_on || "—")} (${esc(f.prior.source || "—")}).</div>
+      ${f.issues?.length ? `<ul class="flags">${f.issues.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+      ${f.body ? `<label>Subject<input value="${esc(f.subject)}" disabled></label>
+        <label>Body<textarea name="body" ${editable ? "" : "disabled"}>${esc(f.body)}</textarea></label>` : ""}
+      <div class="fu-actions">
+        ${editable ? `<button class="small" data-fu-act="edit">Save edits</button><button class="small primary" data-fu-act="approve">${f.status === "approved" ? "Retry Gmail draft" : "Approve"}</button>` : ""}
+        ${["scheduled", "needs_review", "blocked"].includes(f.status) ? '<button class="small ghost" data-fu-act="skip">Skip</button>' : ""}
+        ${["scheduled", "blocked"].includes(f.status) ? `<input type="date" aria-label="New due date" value="${new Date(Math.max(f.due_at * 1000, Date.now())).toISOString().slice(0, 10)}"><button class="small ghost" data-fu-act="reschedule">Reschedule</button>` : ""}
+        ${["scheduled", "generating", "needs_review", "approved", "blocked"].includes(f.status) ? '<button class="small ghost" data-fu-act="cancel">Cancel sequence</button>' : ""}
+        ${f.gmail_draft_id ? `<span class="ok">In Gmail Drafts, same thread (${esc(f.gmail_draft_id)}). Not sent.</span>` : ""}
+      </div></div>`;
+  }).join("") || `<p class="empty">Nothing ${esc(state.q)}.</p>`;
 }
 
 $("#detail").addEventListener("click", run(async (e) => {
@@ -260,12 +320,18 @@ $("#detail").addEventListener("click", run(async (e) => {
   if (act === "refresh") await api(`${base}/research`, { method: "POST", body: { candidate_ids: [id], refresh: true } });
   if (act === "draft") await api(`${base}/drafts/generate`, { method: "POST", body: { candidate_ids: [id] } });
   if (act === "approve") { await api(`${base}/drafts/${id}/approve`, { method: "POST" }); toast("Approved."); }
+  if (act === "seq") { await api(`${base}/contacts/${id}/sequence`, { method: "POST", body: { action: e.target.dataset.seq } }); toast("Saved."); }
   if (act === "invited") { await api(`${base}/drafts/${id}/mark-invited`, { method: "POST" }); toast("Invitation recorded; RSVP follow-up is now possible."); }
   await refresh(); await renderDetail(id);
 }));
 $("#detail").addEventListener("submit", run(async (e) => {
   e.preventDefault();
   const f = e.target;
+  if (f.classList.contains("outcome-form")) {
+    await api(`/campaigns/${state.cid}/contacts/${state.focus}/outcome`, { method: "POST", body: { outcome: f.outcome.value, note: f.note.value } });
+    toast("Outcome recorded in the audit trail.");
+    return refresh().then(() => renderDetail(state.focus));
+  }
   await api(`/campaigns/${state.cid}/drafts/${state.focus}`, { method: "PATCH", body: { subject: f.subject.value, body: f.body.value } });
   toast("Saved. Review it again, then approve.");
   await refresh(); await renderDetail(state.focus);
@@ -307,6 +373,23 @@ $("#btn-gmail").addEventListener("click", run(async () => {
   const { results } = await post("/gmail-drafts", { candidate_ids: approved });
   $("#gmail-results").innerHTML = results.map((r) => `<div>${esc(r.candidate_id)}: ${esc(r.result)}${r.preview ? `<pre>${esc(r.preview)}</pre>` : ""}</div>`).join("");
   refresh();
+}));
+$("#btn-sync").addEventListener("click", run(async () => {
+  const r = await post("/gmail-sync");
+  toast(r.error || `Checked ${r.checked} thread(s): ${r.replies} repl${r.replies === 1 ? "y" : "ies"}, ${r.bounces} bounce(s), ${r.followups_queued} follow-up(s) drafting.`);
+  refresh();
+}));
+$$(".queue-tabs .chip").forEach((b) => b.addEventListener("click", run(async () => { state.q = b.dataset.q; await renderQueue(); })));
+$("#queue-list").addEventListener("click", run(async (e) => {
+  const act = e.target.dataset.fuAct; if (!act) return;
+  const box = e.target.closest("[data-fu]");
+  const body = {};
+  if (act === "edit") body.body = $("textarea", box).value;
+  if (act === "reschedule") body.due_at = new Date(`${$("input[type=date]", box).value}T09:00`).getTime() / 1000;
+  if (act === "cancel" && !box.dataset.confirm) { box.dataset.confirm = 1; e.target.textContent = "Click again to cancel all remaining steps"; return; }
+  const r = await post(`/followups/${box.dataset.fu}/${act}`, body);
+  toast(r.result || `Follow-up ${label(r.status)}.`);
+  document.activeElement.blur(); await refresh();
 }));
 $("#btn-export").addEventListener("click", run(async (e) => {
   e.preventDefault();
