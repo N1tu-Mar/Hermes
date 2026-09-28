@@ -110,8 +110,8 @@ def test_backup_under_concurrent_sqlite_writes_is_consistent(tmp_path):
         i = 0
         while not stop.is_set():
             with db:
-                db.execute("INSERT INTO jobs (id, campaign_id, kind, candidate_id, status) VALUES (?,?,?,?,?)",
-                           (f"w{i}", "camp", "research", f"c{i}", "done")) if _has_cols(db) else None
+                db.execute("INSERT INTO jobs (job_id, campaign_id, kind, candidate_id, status) VALUES (?,?,?,?,?)",
+                           (f"w{i}", "camp", "research", f"c{i}", "done"))
             i += 1
             written.append(i)
         db.close()
@@ -128,12 +128,7 @@ def test_backup_under_concurrent_sqlite_writes_is_consistent(tmp_path):
     ops.restore(tmp_path / "copy", tmp_path / "b2.hbk", PASS)
     db = sqlite3.connect(tmp_path / "copy" / "cache.sqlite3")
     assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-    assert db.execute("SELECT count(*) FROM jobs").fetchone()[0] >= 3
-
-
-def _has_cols(db):
-    cols = {r[1] for r in db.execute("PRAGMA table_info(jobs)")}
-    return {"id", "campaign_id", "kind", "candidate_id", "status"} <= cols
+    assert db.execute("SELECT count(*) FROM jobs").fetchone()[0] > 3  # some concurrent inserts were captured
 
 
 def test_manifest_lists_every_file_with_hash(tmp_path):

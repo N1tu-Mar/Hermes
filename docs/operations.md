@@ -36,7 +36,7 @@ over the full git history. Fake credentials used by tests carry an inline `gitle
 older copies of those fake credentials are listed in `.gitleaksignore`.
 
 Tests are split by subsystem: `test_intake`, `test_research`, `test_drafting`, `test_storage` (atomic JSON and
-migrations), `test_workflow` (end to end, restart, graceful shutdown), `test_ops` (backup/restore, deletion,
+migrations), `test_workflow` (end to end, restart, graceful shutdown), `test_ops` and `test_backup_consistency` (backup/restore, deletion,
 retention), `test_logging`, `test_health`, `test_config`, `test_remote` (auth and per-user isolation), `test_load`
 (3 campaigns x 100 people concurrently), and `test_browser` (the critical workflow in headless Chromium under the
 production CSP).
@@ -122,33 +122,55 @@ one before every upgrade.
 ## Backup and restore
 
 ```bash
-python -m app.ops backup /secure/place/hermes-2026-09-26.hbk     # prompts for a passphrase (or HERMES_BACKUP_PASSPHRASE)
+python -m app.ops backup /secure/place/hermes-2026-09-26.hbk     # app must be stopped; prompts for a passphrase (or HERMES_BACKUP_PASSPHRASE)
 python -m app.ops restore /secure/place/hermes-2026-09-26.hbk    # app must be stopped
 ```
 
+- **Consistency contract:** `backup` takes the exclusive data-root lock (the same lock a running app holds), so it
+  **refuses to run while the app is up** ("stop the app first"), and no app can start while it runs. JSON files,
+  attachments and SQLite files are therefore one point in time. SQLite files are still copied with SQLite's online
+  backup API. Calling `ops.backup(...)` from code without `exclusive=True` skips the lock: each database is
+  consistent, but files are not consistent with each other. Do not use that for real backups.
+- **Output location:** the backup file must be outside `DATA_ROOT` (symlinks are resolved first); otherwise it
+  would be captured into later backups and vanish with the data it protects. Backups are written to
+  `FILE.part`, fsynced, then renamed, so an existing good backup is never replaced by a partial one.
 - **What is included:** everything under `DATA_ROOT`. That covers campaigns (intake and candidates), research
   profiles, drafts and approvals, Gmail idempotency state, jobs, usage and budgets, the activity log, the page and
   research caches, any other files stored there, and in remote mode every user's data plus `auth.sqlite3` (accounts,
   session hashes, and encrypted provider credentials). Email templates and outline rules are code (`app/outlines.py`)
-  and are versioned in git, not in backups. SQLite files are copied with SQLite's online backup API, so a backup
-  taken while the app runs is still consistent. Migration `.bak` files, WAL files, and lock files are skipped.
+  and are versioned in git, not in backups. Migration `.bak` files, WAL files, and lock files are skipped.
 - **What is not included:** secrets that live outside `DATA_ROOT` on purpose. That means `.env`, the local Gmail
   token in `~/.config/outreach/`, and `HERMES_SECRET_KEY`. After a restore, local mode may need `python -m app.gmail`
   again. Remote mode needs the same `HERMES_SECRET_KEY` to decrypt stored provider credentials. Without it, users
   must re-enter their OpenAI key and reconnect Gmail. Everything else still restores.
-- **Format:** `HERMES-BACKUP-1` header, a random salt, then a Fernet token (AES-128-CBC with HMAC-SHA256) over a
-  tar.gz archive. The key is derived from your passphrase with scrypt (n=2^15, r=8, p=1). The file is written with
-  mode 0600. A wrong passphrase or a modified file is rejected before anything on disk changes. Passphrases shorter
-  than 12 characters are refused, and a lost passphrase cannot be recovered.
-- **How restore works:** it decrypts the backup, extracts it with Python's `data` tar filter (which rejects absolute
-  paths, `..`, and links that escape the directory) into a sibling staging directory, and checks that the backup's
-  schema is not newer than the app. It then renames the current data root to `<root>.pre-restore-<timestamp>` and
-  swaps the restored copy into place. It refuses to run while the app holds the data-root lock.
-- **Verification:** `tests/test_ops.py` takes a backup, deletes a person, edits a draft, and deletes an attached
-  file, then restores the backup. It asserts that every file and every SQLite row matches the original.
+- **Format (version 2):** `HERMES-BACKUP-1` header, a random salt, a `STREAM2` marker, then 1 MiB AES-256-GCM
+  frames over a streamed tar.gz. The key comes from your passphrase with scrypt (n=2^15, r=8, p=1). Each frame's
+  nonce is its position and the last frame is flagged, so a modified, reordered, dropped or truncated frame fails
+  authentication. The file is mode 0600. Passphrases shorter than 12 characters are refused, and a lost passphrase
+  cannot be recovered. Restore still reads the older version-1 format (one Fernet token, held in memory).
+- **Manifest and hashes:** the last archive member, `hermes-backup.json`, records the format version, the JSON and
+  SQLite schema versions, and every file's size and SHA-256 (computed over the exact bytes archived).
+- **Memory and staging:** backup and restore stream one chunk at a time, so archive size is not limited by RAM.
+  SQLite snapshots are staged in a `0700` directory next to the output file (`.hermes-backup-*`) and removed on
+  success, error or disk-full. The `.part` file is removed on failure. Restore stages into a `0700`
+  `.<root>.restore-*` directory beside `DATA_ROOT` and removes it on any failure.
+- **How restore works:** under the data-root lock it decrypts and extracts to the staging directory (Python's `data`
+  tar filter rejects absolute paths, `..`, and links that escape), then verifies everything **before touching live
+  data**: the manifest is present and well formed, the backup's schema is not newer than the app, the file set
+  matches the manifest exactly, every size and SHA-256 matches, there are no symlinks or special files, and each
+  SQLite file passes `PRAGMA integrity_check` (with `cache.sqlite3` not newer than this app's migrations). Only then
+  does it rename the current root to `<root>.pre-restore-<timestamp>` and swap the restored copy in. A wrong
+  passphrase, corruption or truncation stops with an error and leaves the live root as it was.
+- **Verification:** `tests/test_backup_consistency.py` covers the lock contract (a running app blocks backup, and a
+  writer cannot start mid-backup), backups while another thread writes to SQLite, manifest contents, output inside
+  `DATA_ROOT`, 0700 staging and cleanup, disk-full cleanup (previous backup survives), bounded memory on a 24 MB
+  archive, bit-flip / truncation / wrong-passphrase / frame-drop corruption, authentic archives with bad hashes,
+  extra files or newer schemas, and a full CLI backup, wipe, restore drill that reopens the restored data.
+  `tests/test_ops.py` also takes a backup, deletes and edits data, and checks that a restore reproduces every file
+  and SQLite row.
 
-Backups are built in memory, which is fine for personal-scale data (tens of MB). Keep backups outside the machine.
-Encryption makes them safe to store in ordinary cloud storage.
+Take a restore drill (restore into a scratch `DATA_ROOT`) after any change to how you back up. Keep backups outside
+the machine. Encryption makes them safe to store in ordinary cloud storage.
 
 ## Deletion and retention
 
