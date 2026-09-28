@@ -1,10 +1,10 @@
 import inspect
 import re
 
+from test_contacts import boot
+
 from app import mcp_server
 from app.api import create_app
-
-from test_contacts import boot
 
 FORBIDDEN_NAMES = (
     "approve_draft",
@@ -29,7 +29,7 @@ NEW_TOOLS = (
 def test_renamed_to_hermes():
     assert mcp_server.mcp.name == "hermes"
     assert "outreach desk" not in inspect.getsource(mcp_server).lower()
-    assert "HERMES is not running" in mcp_server.call.__code__.co_consts
+    assert "HERMES is not running" in inspect.getsource(mcp_server.call)
 
 
 def test_prohibited_actions_absent():
