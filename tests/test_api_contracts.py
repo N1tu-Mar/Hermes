@@ -72,7 +72,10 @@ def test_unknown_fields_rejected(env, cid, method, path, body):
 def test_string_boolean_rejected_on_external_routes(env, cid):
     client, _, _ = env
     assert client.patch("/api/sending/settings", json={"enabled": "true"}).status_code == 422
-    assert client.put(f"/api/campaigns/{cid}/candidates/c/do-not-contact", json={"do_not_contact": "no"}).status_code == 422
+    assert (
+        client.put(f"/api/campaigns/{cid}/candidates/c/do-not-contact", json={"do_not_contact": "no"}).status_code
+        == 422
+    )
     assert client.post(f"/api/campaigns/{cid}/rules/r/run", json={"dry_run": "false"}).status_code == 422
     assert client.post("/api/templates/t/archive", json={"archived": "false"}).status_code == 422
     assert client.post(f"/api/campaigns/{cid}/gmail-drafts", json={"candidate_ids": "c_001"}).status_code == 422
