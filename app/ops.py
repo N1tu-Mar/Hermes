@@ -2,7 +2,7 @@
 
   python -m app.ops migrate                     apply pending SQLite + JSON migrations (backs up first)
   python -m app.ops check-schemas               validate templates and every campaign's JSON files
-  python -m app.ops backup FILE                 encrypted snapshot of the whole data root
+  python -m app.ops backup FILE                 encrypted snapshot of the whole data root (app must be stopped; FILE outside it)
   python -m app.ops restore FILE                replace the data root with a backup (old root kept aside)
   python -m app.ops purge [--days N] [--campaigns-older-than N]
   python -m app.ops forget (--email ADDR | --name "Full Name")   delete a person from every campaign
@@ -27,6 +27,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import zlib
 from pathlib import Path
 
 from . import cache as cache_mod
@@ -85,77 +86,244 @@ def _service(root):
 
 
 # ---------------------------------------------------------------- backup / restore
-def backup(data_root, out, passphrase):
-    """Consistent encrypted snapshot of every file under data_root. SQLite is copied with the online backup API."""
-    data_root, out = Path(data_root), Path(out)
-    buf = io.BytesIO()
-    with tempfile.TemporaryDirectory() as tmp, tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        meta = {
-            "version": 1,
-            "created_at": time.time(),
-            "json_schema": contracts.SCHEMA_VERSION,
-            "sqlite_schema": len(cache_mod.MIGRATIONS),
-        }
-        info = tarfile.TarInfo(META)
-        body = json.dumps(meta).encode()
-        info.size = len(body)
-        tar.addfile(info, io.BytesIO(body))
-        for p in sorted(data_root.rglob("*")):
-            if not p.is_file() or p.name.endswith(SKIP_SUFFIXES) or ".bak" in p.name:
-                continue
-            rel = p.relative_to(data_root).as_posix()
-            if p.suffix == ".sqlite3":
-                snap = Path(tmp) / "snap.sqlite3"
-                src, dst = sqlite3.connect(p), sqlite3.connect(snap)
-                src.backup(dst)
-                src.close(), dst.close()
-                tar.add(snap, arcname=rel)
-                snap.unlink()
-            else:
-                tar.add(p, arcname=rel)
-    from cryptography.fernet import Fernet
+# Format 2: MAGIC + salt + STREAM + frames. Each frame is a 4-byte length plus an AES-GCM chunk (nonce = frame
+# counter, AAD = final-frame flag), so reordering, dropping or truncating frames fails authentication. Only one
+# chunk is ever held in memory. Format 1 (one Fernet token over the whole tar.gz) is still readable by restore.
+STREAM = b"STREAM2\n"  # a Fernet token starts with "gAAAA", so this cannot collide with format 1
+CHUNK = 1 << 20
 
-    salt = os.urandom(16)
-    blob = MAGIC + salt + Fernet(_key(passphrase, salt)).encrypt(buf.getvalue())
+
+def _aead(passphrase, salt):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    return AESGCM(base64.urlsafe_b64decode(_key(passphrase, salt)))
+
+
+def _nonce(n):
+    return n.to_bytes(12, "big")
+
+
+class _EncWriter:
+    """File-like sink: buffers one chunk, seals full chunks as non-final frames, close() seals the final one."""
+
+    def __init__(self, f, aead):
+        self.f, self.aead, self.n, self.buf = f, aead, 0, bytearray()
+
+    def _seal(self, data, final):
+        ct = self.aead.encrypt(_nonce(self.n), bytes(data), b"\x01" if final else b"\x00")
+        self.f.write(len(ct).to_bytes(4, "big") + ct)
+        self.n += 1
+
+    def write(self, data):
+        self.buf += data
+        while len(self.buf) > CHUNK:  # strictly greater: the last chunk is always held back for close()
+            self._seal(self.buf[:CHUNK], False)
+            del self.buf[:CHUNK]
+        return len(data)
+
+    def close(self):
+        self._seal(self.buf, True)
+        self.buf = bytearray()
+
+
+class _DecReader:
+    """File-like source over the frames; the frame that is followed by EOF must authenticate as final."""
+
+    def __init__(self, f, aead):
+        self.f, self.aead, self.n, self.buf, self.head = f, aead, 0, b"", f.read(4)
+
+    def _fill(self):
+        if not self.head:
+            return False
+        if len(self.head) < 4 or int.from_bytes(self.head, "big") > CHUNK + 16:
+            raise ValueError("bad frame header")
+        ln = int.from_bytes(self.head, "big")
+        ct = self.f.read(ln)
+        if len(ct) != ln:
+            raise ValueError("truncated backup")
+        self.head = self.f.read(4)
+        self.buf += self.aead.decrypt(_nonce(self.n), ct, b"\x00" if self.head else b"\x01")
+        self.n += 1
+        return True
+
+    def read(self, n):
+        while len(self.buf) < n and self._fill():
+            pass
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+
+class _Hashing:
+    def __init__(self, f):
+        self.f, self.h = f, hashlib.sha256()
+
+    def read(self, n):
+        data = self.f.read(n)
+        self.h.update(data)
+        return data
+
+
+def backup(data_root, out, passphrase, *, exclusive=False):
+    """Encrypted, manifest-carrying snapshot of every file under data_root, streamed (never fully in memory).
+
+    exclusive=True (what the CLI uses) takes the data-root lock, so no app process can write while it runs and the
+    JSON files, SQLite files and attachments are one consistent point in time. Without it, each SQLite file is
+    still copied with the online backup API but files are not consistent with each other.
+    """
+    data_root = Path(os.path.realpath(data_root))
+    out = Path(os.path.realpath(out))
+    if out == data_root or data_root in out.parents:
+        raise OpsError(f"backup output must be outside DATA_ROOT ({data_root})")
+    lock = _lock(data_root) if exclusive else None
+    staging = Path(tempfile.mkdtemp(prefix=".hermes-backup-", dir=out.parent))  # mkdtemp is 0700
     part = out.with_name(out.name + ".part")
-    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(blob)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(part, out)
+    try:
+        salt = os.urandom(16)
+        files = {}
+        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(MAGIC + salt + STREAM)
+            enc = _EncWriter(f, _aead(passphrase, salt))
+            with tarfile.open(fileobj=enc, mode="w|gz") as tar:
+                for p in sorted(data_root.rglob("*")):
+                    if not p.is_file() or p.name.endswith(SKIP_SUFFIXES) or ".bak" in p.name:
+                        continue
+                    rel = p.relative_to(data_root).as_posix()
+                    src = p
+                    if p.suffix == ".sqlite3":
+                        src = staging / "snap.sqlite3"
+                        a, b = sqlite3.connect(p), sqlite3.connect(src)
+                        a.backup(b)
+                        a.close(), b.close()
+                    with open(src, "rb") as fh:
+                        info = tar.gettarinfo(arcname=rel, fileobj=fh)
+                        hf = _Hashing(fh)
+                        tar.addfile(info, hf)
+                    files[rel] = {"size": info.size, "sha256": hf.h.hexdigest()}
+                    if src is not p:
+                        src.unlink()
+                meta = {
+                    "version": 2,
+                    "created_at": time.time(),
+                    "json_schema": contracts.SCHEMA_VERSION,
+                    "sqlite_schema": len(cache_mod.MIGRATIONS),
+                    "files": files,
+                }
+                body = json.dumps(meta, sort_keys=True).encode()
+                info = tarfile.TarInfo(META)  # last member: the manifest can only be written once hashes are known
+                info.size = len(body)
+                tar.addfile(info, io.BytesIO(body))
+            enc.close()
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(part, out)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        part.unlink(missing_ok=True)
+        if lock:
+            lock.close()
     return out
 
 
-def restore(data_root, inp, passphrase):
-    """Decrypt, verify, extract to a sibling dir, then swap it in. The previous root is kept as <root>.pre-restore-*."""
+def _verify(root):
+    """Everything a restore is about to trust, checked before the live data is touched."""
+    manifest = root / META
+    if not manifest.is_file():
+        raise OpsError("backup has no manifest")
+    meta = json.loads(manifest.read_text())
+    if meta["json_schema"] > contracts.SCHEMA_VERSION or meta["sqlite_schema"] > len(cache_mod.MIGRATIONS):
+        raise OpsError("backup was made by a newer HERMES; upgrade the app before restoring")
+    manifest.unlink()
+    found = {}
+    for p in root.rglob("*"):
+        if p.is_symlink() or (not p.is_dir() and not p.is_file()):
+            raise OpsError(f"backup contains a non-regular file: {p.relative_to(root)}")
+        if p.is_file():
+            found[p.relative_to(root).as_posix()] = p
+    if meta.get("version") == 2:
+        if set(found) != set(meta["files"]):
+            diff = sorted(set(found) ^ set(meta["files"]))
+            raise OpsError(f"backup contents do not match its manifest: {diff[:3]}")
+        for rel, want in meta["files"].items():
+            h = hashlib.sha256()
+            with open(found[rel], "rb") as fh:
+                while chunk := fh.read(CHUNK):
+                    h.update(chunk)
+            if h.hexdigest() != want["sha256"] or found[rel].stat().st_size != want["size"]:
+                raise OpsError(f"backup file failed its hash check: {rel}")
+    for rel, p in found.items():
+        if p.suffix != ".sqlite3":
+            continue
+        db = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        try:
+            ok = db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+        except sqlite3.DatabaseError:
+            ok, version = False, 0
+        finally:
+            db.close()
+        if not ok:
+            raise OpsError(f"backup database failed integrity_check: {rel}")
+        if p.name == "cache.sqlite3" and version > len(cache_mod.MIGRATIONS):
+            raise OpsError("backup was made by a newer HERMES; upgrade the app before restoring")
+
+
+def _extract(inp, passphrase, staging):
+    from cryptography.exceptions import InvalidTag
     from cryptography.fernet import Fernet, InvalidToken
 
+    corrupt = OpsError("wrong passphrase or corrupted backup")
+    with open(inp, "rb") as f:
+        head = f.read(len(MAGIC) + 16 + len(STREAM))
+        if not head.startswith(MAGIC):
+            raise OpsError("not a HERMES backup file")
+        salt = head[len(MAGIC) : len(MAGIC) + 16]
+        if head[len(MAGIC) + 16 :] != STREAM:  # format 1: a single in-memory Fernet token
+            try:
+                raw = Fernet(_key(passphrase, salt)).decrypt(head[len(MAGIC) + 16 :] + f.read())
+            except InvalidToken:
+                raise corrupt from None
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+                tar.extractall(staging, filter="data")  # rejects absolute paths, .., links outside, devices
+            return
+        src = _DecReader(f, _aead(passphrase, salt))
+        try:
+            with tarfile.open(fileobj=src, mode="r|gz") as tar:
+                tar.extractall(staging, filter="data")
+            while src.read(CHUNK):  # authenticate every remaining frame, including the final one
+                pass
+        except (InvalidTag, ValueError, EOFError, OSError, zlib.error, tarfile.ReadError) as e:
+            if isinstance(e, OSError) and e.errno:  # a real I/O error (disk full...) is not corruption
+                raise
+            raise corrupt from None
+
+
+def restore(data_root, inp, passphrase):
+    """Decrypt and extract to a private sibling dir, verify it completely, then swap it in.
+
+    Runs under the data-root lock. Any failure removes the staging dir and leaves the live root untouched;
+    on success the previous root is kept as <root>.pre-restore-*.
+    """
     data_root = Path(data_root)
-    blob = Path(inp).read_bytes()
-    if not blob.startswith(MAGIC):
-        raise OpsError("not a HERMES backup file")
-    salt = blob[len(MAGIC) : len(MAGIC) + 16]
-    try:
-        raw = Fernet(_key(passphrase, salt)).decrypt(blob[len(MAGIC) + 16 :])
-    except InvalidToken:
-        raise OpsError("wrong passphrase or corrupted backup") from None
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    staging = data_root.with_name(f".{data_root.name}.restore-{stamp}")
-    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-        tar.extractall(staging, filter="data")  # rejects absolute paths, .., links outside, devices
-    meta = json.loads((staging / META).read_text())
-    (staging / META).unlink()
-    if meta["json_schema"] > contracts.SCHEMA_VERSION or meta["sqlite_schema"] > len(cache_mod.MIGRATIONS):
-        shutil.rmtree(staging)
-        raise OpsError("backup was made by a newer HERMES; upgrade the app before restoring")
     lock = _lock(data_root) if data_root.exists() else None
+    staging = Path(tempfile.mkdtemp(prefix=f".{data_root.name}.restore-", dir=data_root.parent))
     try:
+        _extract(inp, passphrase, staging)
+        _verify(staging)
         aside = None
         if data_root.exists():
             aside = data_root.with_name(f"{data_root.name}.pre-restore-{stamp}")
             data_root.rename(aside)
-        staging.rename(data_root)
+        try:
+            staging.rename(data_root)
+        except OSError:
+            if aside:
+                aside.rename(data_root)
+            raise
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     finally:
         if lock:
             lock.close()
@@ -287,7 +455,8 @@ def main(argv=None):
             print("\n".join(probs) or "schemas ok")
             return 1 if probs else 0
         if a.cmd == "backup":
-            out = backup(root, a.file, _secret("HERMES_BACKUP_PASSPHRASE", "Backup passphrase: ", confirm=True))
+            pw = _secret("HERMES_BACKUP_PASSPHRASE", "Backup passphrase: ", confirm=True)
+            out = backup(root, a.file, pw, exclusive=True)
             print(f"wrote {out} ({out.stat().st_size} bytes). Keep the passphrase separately; it cannot be recovered.")
             return 0
         if a.cmd == "restore":
