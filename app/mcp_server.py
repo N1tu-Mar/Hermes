@@ -15,7 +15,7 @@ BASE = f"http://127.0.0.1:{os.environ.get('APP_PORT', 8765)}/api"
 TOKEN_FILE = Path(os.path.expanduser("~/.config/outreach/app_token"))
 
 mcp = MCPServer(
-    "outreach-desk",
+    "hermes",
     instructions=(
         "Research and outreach assistant for a Rutgers student. Creates Gmail DRAFTS only after a human approved "
         "each draft in the web UI. It cannot send, approve a send, or turn sending on: a human does that in the web UI. "
@@ -29,7 +29,7 @@ def call(method, path, body=None, params=None):
     try:
         r = httpx.request(method, BASE + path, json=body, params=params, headers={"X-App-Token": token}, timeout=30)
     except httpx.ConnectError:
-        return {"error": "Outreach app is not running. Start it with: python -m app.api"}
+        return {"error": "HERMES is not running. Start it with: python -m app.api"}
     if r.status_code >= 400:
         return {"error": r.json().get("detail", r.text) if "json" in r.headers.get("content-type", "") else r.text}
     return r.json() if "json" in r.headers.get("content-type", "") else {"text": r.text}
@@ -312,8 +312,14 @@ def log_interaction(contact_id: int, kind: str, detail: str = "", at: str = "") 
 
 @mcp.tool()
 def list_contact_reviews() -> dict:
-    """Possible duplicate people HERMES refused to merge automatically. Resolve them in the web UI."""
+    """Possible duplicate people HERMES refused to merge automatically. Resolve with resolve_contact_review."""
     return {"reviews": call("GET", "/contact-reviews")}
+
+
+@mcp.tool()
+def resolve_contact_review(review_id: int, merge_into_contact_id: int = 0) -> dict:
+    """Resolve a possible-duplicate review: merge into that contact id, or 0 to keep them as a separate new person."""
+    return call("POST", f"/contact-reviews/{review_id}/resolve", {"contact_id": merge_into_contact_id or None})
 
 
 @mcp.tool()
@@ -375,6 +381,102 @@ def pause_sending() -> dict:
 def emergency_stop() -> dict:
     """Turn sending off and cancel every scheduled message. Cancelled messages need fresh human approval."""
     return call("POST", "/sending/emergency-stop")
+
+
+@mcp.tool()
+def create_identity(fields: dict) -> dict:
+    """Create a sender identity (name, biography, signature, default ask...). Same fields as the web UI form."""
+    return call("POST", "/identities", fields)
+
+
+@mcp.tool()
+def update_identity(identity_id: int, fields: dict) -> dict:
+    """Update the given fields of a sender identity."""
+    return call("PATCH", f"/identities/{identity_id}", fields)
+
+
+@mcp.tool()
+def delete_identity(identity_id: int) -> dict:
+    """Delete a sender identity. Refused while any campaign uses it."""
+    return call("DELETE", f"/identities/{identity_id}")
+
+
+@mcp.tool()
+def followup_queue(campaign_id: str) -> dict:
+    """Follow-ups grouped as due, upcoming, paused, blocked, completed."""
+    return call("GET", f"/campaigns/{campaign_id}/followups")
+
+
+@mcp.tool()
+def followup_sequence(campaign_id: str, candidate_id: str, action: str) -> dict:
+    """action: pause, resume, or stop a person's follow-up sequence. A stopped sequence can't be resumed."""
+    if action not in ("pause", "resume", "stop"):
+        return {"error": "action must be pause, resume, or stop"}
+    return call("POST", f"/campaigns/{campaign_id}/contacts/{candidate_id}/sequence", {"action": action})
+
+
+@mcp.tool()
+def followup_step(campaign_id: str, candidate_id: str, step: int, action: str, due_at: float = 0) -> dict:
+    """action: cancel (stops the sequence), skip, or reschedule (needs due_at, unix seconds). Approval is human-only."""
+    if action not in ("cancel", "skip", "reschedule"):
+        return {"error": "action must be cancel, skip, or reschedule"}
+    return call(
+        "POST", f"/campaigns/{campaign_id}/followups/{candidate_id}/{step}/{action}", {"due_at": due_at or None}
+    )
+
+
+@mcp.tool()
+def regenerate_followups(campaign_id: str, candidate_ids: list[str]) -> dict:
+    """Regenerate follow-up drafts; they land in needs_review and a human must approve them in the web UI."""
+    return generate_drafts(campaign_id, candidate_ids, followup=True)
+
+
+@mcp.tool()
+def gmail_sync(campaign_id: str) -> dict:
+    """Read HERMES threads in Gmail for replies/bounces, then queue follow-ups that became due."""
+    return call("POST", f"/campaigns/{campaign_id}/gmail-sync")
+
+
+@mcp.tool()
+def record_outcome(campaign_id: str, candidate_id: str, outcome: str, at: str = "") -> dict:
+    """Manually record an outcome: replied, interested, declined, bounced, meeting_booked. at: optional ISO time."""
+    return call(
+        "POST", f"/campaigns/{campaign_id}/candidates/{candidate_id}/outcomes", {"outcome": outcome, "at": at or None}
+    )
+
+
+@mcp.tool()
+def delete_outcome(campaign_id: str, candidate_id: str, outcome: str) -> dict:
+    """Remove a manually recorded outcome from the timeline."""
+    return call("DELETE", f"/campaigns/{campaign_id}/candidates/{candidate_id}/outcomes/{outcome}")
+
+
+@mcp.tool()
+def analytics_report(
+    campaign_id: str = "", start: str = "", end: str = "", group_by: str = "campaign", csv_kind: str = ""
+) -> dict:
+    """Outreach analytics, optionally filtered. group_by: campaign, campaign_type, sender, template, organization.
+    csv_kind (e.g. aggregate) returns CSV text instead."""
+    params = {"campaign_id": campaign_id, "start": start, "end": end, "group_by": group_by}
+    if csv_kind:
+        return call("GET", "/analytics/export", params={**params, "kind": csv_kind})
+    return call("GET", "/analytics", params=params)
+
+
+@mcp.tool()
+def list_notifications(include_dismissed: bool = False) -> dict:
+    """In-app notifications (due follow-ups, replies, ...)."""
+    return {"notifications": call("GET", "/notifications", params={"include_dismissed": include_dismissed})}
+
+
+@mcp.tool()
+def update_notification(notification_id: int = 0, action: str = "read") -> dict:
+    """action: read or dismiss one notification; read_all marks every notification read (id ignored)."""
+    if action == "read_all":
+        return call("POST", "/notifications/read-all")
+    if action not in ("read", "dismiss"):
+        return {"error": "action must be read, dismiss, or read_all"}
+    return call("POST", f"/notifications/{notification_id}/{action}")
 
 
 if __name__ == "__main__":
