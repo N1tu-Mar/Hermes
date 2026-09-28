@@ -230,8 +230,11 @@ class GmailDrafts:
                 pass
 
         if thread_id and self.can_sync:
-            messages = self.thread(thread_id)
             checked = True
+            try:
+                messages = self.thread(thread_id)
+            except KeyError:
+                messages = []
             expected_rfc = rfc_message_id(key) if key else None
             for msg in messages:
                 headers = msg["headers"]

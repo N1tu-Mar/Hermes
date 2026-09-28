@@ -44,6 +44,11 @@ def milestone(cache, campaign_id, candidate_id, stage, at=None):
         return cur.rowcount == 1
 
 
+def delivery(cache, campaign_id, candidate_id, delivered_at):
+    """Project an actual provider/manual delivery exactly once at its real timestamp."""
+    return milestone(cache, campaign_id, candidate_id, "sent", delivered_at)
+
+
 def timeline(cache, campaign_id, candidate_id):
     return cache.q("SELECT stage, at FROM milestones WHERE campaign_id=? AND candidate_id=? ORDER BY at",
                    (campaign_id, candidate_id))
@@ -139,7 +144,13 @@ def backfill(svc):
             if d["status"] in ("approved", "gmail_draft_created"):
                 milestone(svc.cache, cid, d["candidate_id"], "approved", d["updated_at"])
             if d.get("invited_at"):
-                milestone(svc.cache, cid, d["candidate_id"], "sent", d["invited_at"])
+                delivery(svc.cache, cid, d["candidate_id"], d["invited_at"])
+        for c in svc.cache.q("SELECT candidate_id,sent_at FROM outreach_contacts WHERE campaign_id=? AND sent_at IS NOT NULL",
+                             (cid,)):
+            delivery(svc.cache, cid, c["candidate_id"], c["sent_at"])
+        for s in svc.cache.q("SELECT candidate_id,finished_at FROM sends WHERE campaign_id=? AND "
+                             "status IN ('sent','replied','bounced','declined') AND finished_at IS NOT NULL", (cid,)):
+            delivery(svc.cache, cid, s["candidate_id"], s["finished_at"])
 
 
 def _ts(iso):

@@ -1042,18 +1042,19 @@ class CampaignService:
         for cand_id in dict.fromkeys(candidate_ids):
             d = self.cache.get_draft(campaign_id, cand_id)
             r = {"candidate_id": cand_id}
+            outreach_dnc = bool((self.outreach.contact(campaign_id, cand_id) or {}).get("do_not_contact"))
             dnc = self.ledger.dnc_block(campaign_id, cand_id)
             if not dnc and self.workspace:
                 cand = next((c for c in self.store.candidates(campaign_id)["candidates"]
                              if c["candidate_id"] == cand_id), {})
                 if self.workspace.is_do_not_contact(campaign_id, cand_id, cand, profiles.get(cand_id))[0]:
                     dnc = "do-not-contact policy"
-            if dnc:
+            if outreach_dnc:
+                r["result"] = "skipped: marked do not contact"
+            elif dnc:
                 r["result"] = f"skipped: {dnc}"
             elif not d or d["status"] not in ("approved", "gmail_draft_created"):
                 r["result"] = "skipped: not approved"
-            elif (self.outreach.contact(campaign_id, cand_id) or {}).get("do_not_contact"):
-                r["result"] = "skipped: marked do not contact"
             elif d.get("gmail_draft_id"):
                 r.update(result="already created", gmail_draft_id=d["gmail_draft_id"])
             elif not self._still_current(campaign_id, d):
@@ -1199,7 +1200,7 @@ class CampaignService:
         d = self.cache.get_draft(cid, cand, row.get("template_version"))
         if d and not d.get("invited_at"):
             self.cache.upsert_draft(cid, cand, d["template_version"], invited_at=at)
-        analytics.milestone(self.cache, cid, cand, "sent", at)
+        analytics.delivery(self.cache, cid, cand, at)
         contact_id = self.ledger.linked(cid, cand)
         if contact_id and not self.cache.q(
                 "SELECT 1 FROM interactions WHERE campaign_id=? AND candidate_id=? AND json_extract(meta,'$.send_id')=?",
@@ -1209,7 +1210,27 @@ class CampaignService:
                              "gmail_thread_id": row.get("gmail_thread_id"),
                              "rfc_message_id": row.get("rfc_message_id")}, at)
         self.outreach.record_sent(cid, cand, at, row.get("source") or "gmail", row.get("rfc_message_id"),
-                                  row.get("subject"), row.get("gmail_message_id"), row.get("gmail_thread_id"))
+                                  row.get("subject"), row.get("gmail_message_id"), row.get("gmail_thread_id"),
+                                  project=False)
+
+    def _observed_initial_delivery(self, cid, cand, at, source, subject, message_id, thread_id, rfc_id):
+        d = self.cache.get_draft(cid, cand) or {}
+        self._record_delivery({"send_id": f"gmail:{message_id or rfc_id or thread_id}", "campaign_id": cid,
+                               "candidate_id": cand, "template_version": d.get("template_version"),
+                               "subject": subject or d.get("subject") or "", "finished_at": at,
+                               "gmail_draft_id": d.get("gmail_draft_id"), "gmail_message_id": message_id,
+                               "gmail_thread_id": thread_id, "rfc_message_id": rfc_id, "source": source})
+
+    def _record_followup_delivery(self, cid, cand, step, message):
+        """Record one delivered follow-up in contact history; scheduling is owned by Outreach."""
+        send_id, contact_id = f"gmail-followup:{message['id']}", self.ledger.linked(cid, cand)
+        if contact_id and not self.cache.q(
+                "SELECT 1 FROM interactions WHERE campaign_id=? AND candidate_id=? AND json_extract(meta,'$.send_id')=?",
+                (cid, cand, send_id)):
+            self.ledger.log(contact_id, "followup", f"Follow-up {step + 1} delivered", cid, cand,
+                            {"send_id": send_id, "gmail_message_id": message["id"],
+                             "gmail_thread_id": message.get("thread_id"),
+                             "rfc_message_id": message["headers"].get("message-id")}, message["at"])
 
     def _outbound_outcome(self, row, outcome, at):
         self.outreach.set_outcome(row["campaign_id"], row["candidate_id"], outcome, "manual", at=at)
@@ -1245,6 +1266,10 @@ class CampaignService:
             existing = self.cache.q("SELECT reason FROM suppressions WHERE email=?", ((email or "").lower(),))
             if email and (not existing or existing[0]["reason"] != reason):
                 self.outbox.suppress(email, reason)
+        if outcome == "do_not_contact":
+            contact_id = self.ledger.linked(campaign_id, cand_id)
+            if contact_id and not self.ledger.contact(contact_id)["do_not_contact"]:
+                self.ledger.update_contact(contact_id, {"do_not_contact": True, "dnc_reason": note or "manual"})
 
     @staticmethod
     def export_one(d, profile):

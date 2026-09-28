@@ -71,7 +71,7 @@ class Outreach:
         self.log(cid, cand, "gmail_draft", f"initial draft in Gmail (thread {ids.get('thread_id')})")
 
     def record_sent(self, cid, cand, at, source, rfc_message_id=None, subject=None,
-                    gmail_message_id=None, gmail_thread_id=None):
+                    gmail_message_id=None, gmail_thread_id=None, project=True):
         """First recorded send starts the sequence. Idempotent."""
         c = self.contact(cid, cand)
         if c and c["sent_at"]:
@@ -82,6 +82,9 @@ class Outreach:
                     patch[key] = value
             if patch:
                 self._set(cid, cand, **patch)
+            if project:
+                self.svc._observed_initial_delivery(cid, cand, at, source, subject or c.get("subject"),
+                                                    gmail_message_id, gmail_thread_id, rfc_message_id)
             return
         intake = self.svc.store.candidates(cid)["intake"]
         fields = {"sent_at": at, "sent_source": source, "sequence": outlines.sequence_for(intake)}
@@ -98,6 +101,9 @@ class Outreach:
         if not c or c["outcome"] in (None, "no_response"):
             self.set_outcome(cid, cand, "awaiting_reply", source)
         self._schedule(cid, cand, 0, at)
+        if project:
+            self.svc._observed_initial_delivery(cid, cand, at, source, subject, gmail_message_id,
+                                                gmail_thread_id, rfc_message_id)
 
     def set_outcome(self, cid, cand, outcome, source, note="", at=None):
         if outcome not in OUTCOMES:
@@ -179,6 +185,7 @@ class Outreach:
                              self.svc.now(), *key)):
             return False
         self.log(cid, cand, "followup_sent", f"follow-up {step + 1} delivered on {_day(at)}", "gmail")
+        self.svc._record_followup_delivery(cid, cand, step, message)
         nxt = self.cache.q("SELECT * FROM followups WHERE campaign_id=? AND candidate_id=? AND step=?",
                            (cid, cand, step + 1))
         if nxt and nxt[0]["status"] == "awaiting_delivery":
