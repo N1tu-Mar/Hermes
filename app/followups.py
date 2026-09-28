@@ -108,9 +108,10 @@ class Outreach:
     def set_outcome(self, cid, cand, outcome, source, note="", at=None):
         if outcome not in OUTCOMES:
             raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}")
-        old = (self.contact(cid, cand) or {}).get("outcome")
+        current = self.contact(cid, cand) or {}
+        old = current.get("outcome")
         if old == outcome:
-            self.svc._outcome_changed(cid, cand, outcome, source, at or self.svc.now(), note)
+            self.svc._outcome_changed(cid, cand, outcome, source, current.get("outcome_at") or at or self.svc.now(), note)
             return
         at = at or self.svc.now()
         self._set(cid, cand, outcome=outcome, outcome_at=at)

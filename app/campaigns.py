@@ -1248,7 +1248,7 @@ class CampaignService:
             fresh = analytics.milestone(self.cache, campaign_id, cand_id, outcome, at)
             contact_id = self.ledger.linked(campaign_id, cand_id)
             kind = analytics.INTERACTION_KIND[outcome]
-            marker = f"{source}:{outcome}:{at}"
+            marker = f"{source}:{outcome}:{float(at):.6f}"
             if contact_id and not self.cache.q(
                     "SELECT 1 FROM interactions WHERE campaign_id=? AND candidate_id=? AND json_extract(meta,'$.outcome_key')=?",
                     (campaign_id, cand_id, marker)):

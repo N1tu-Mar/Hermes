@@ -288,7 +288,7 @@ def test_actual_followup_delivery_and_all_outcomes_converge(tmp_path):
     assert len(svc.cache.q("SELECT 1 FROM milestones WHERE campaign_id=? AND candidate_id=? AND stage='bounced'",
                            (cid, cand))) == 1
 
-    svc.outreach.set_outcome(cid, cand, "bounced", "gmail", at=bounce_at)
+    svc.outreach.set_outcome(cid, cand, "bounced", "gmail")
     assert len(svc.cache.q("SELECT 1 FROM interactions WHERE campaign_id=? AND candidate_id=? AND kind='bounce'",
                            (cid, cand))) == 1
     svc.set_outcome(cid, cand, "meeting_booked", "manual correction")
