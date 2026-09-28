@@ -288,3 +288,25 @@ def test_oauth_start_records_bounded_state(remote, monkeypatch):
         assert call("GET", "/auth/gmail/start", follow_redirects=False).status_code == 303
     assert len(app.state.oauth) == pool_mod.MAX_PENDING_PER_USER
     assert app.state.oauth.pop("state-1") is None and app.state.oauth.pop("state-6") == (ids["user1"], "verifier")
+
+
+def test_background_maintenance_evicts_idle_services(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "TOKEN_FILE", tmp_path / "app_token")
+    monkeypatch.setattr(pool_mod, "MAINTENANCE_INTERVAL", 0.05)
+    monkeypatch.setattr(pool_mod, "IDLE_EVICT_SECONDS", 0.1)
+    cfg = Config(
+        mode="remote", data_root=tmp_path / "d", public_url=URL, secret_key=Fernet.generate_key().decode(),
+        shutdown_grace=0.5,
+    )  # fmt: skip
+    cfg.data_root.mkdir()
+    acc = Accounts(cfg.data_root, cfg.secret_key)
+    acc.add_user("user1", PW)
+    acc.close()
+    app = api.create_app(config=cfg)
+    with TestClient(app, base_url=URL) as client:
+        assert session(client, "user1")("GET", "/api/campaigns").status_code == 200
+        assert len(app.state.pool) == 1
+        deadline = time.time() + 5
+        while app.state.pool.live and time.time() < deadline:
+            time.sleep(0.05)
+        assert not app.state.pool.live
