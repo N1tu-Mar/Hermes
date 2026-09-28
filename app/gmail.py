@@ -21,6 +21,7 @@ gmail.compose alone technically permits sending, so the app gates on this.
 """
 
 import base64
+import hashlib
 import json
 import os
 from email.message import EmailMessage
@@ -30,7 +31,7 @@ COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
 METADATA = "https://www.googleapis.com/auth/gmail.metadata"
 SCOPES = [COMPOSE, METADATA]
 SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
-THREAD_HEADERS = ["From", "Subject", "Message-ID", "Auto-Submitted"]
+THREAD_HEADERS = ["From", "Subject", "Message-ID", "Auto-Submitted", "X-Outreach-Key"]
 REAUTH = "Gmail authorization expired, was revoked, or lacks a scope. Run `python -m app.gmail` to reconnect."
 
 
@@ -48,8 +49,14 @@ def credentials_paths():
     return cred, token
 
 
+def rfc_message_id(key):
+    """Stable RFC Message-ID for one logical outbound message."""
+    token = hashlib.sha256(str(key).encode()).hexdigest()[:32]
+    return f"<hermes-{token}@outreach.local>"
+
+
 def build_message(to, subject, body, key, reply_to=None, attachments=None,
-                  thread_id=None, in_reply_to=None):
+                  thread_id=None, in_reply_to=None, message_id=None):
     msg = EmailMessage()
     if to:
         msg["To"] = to
@@ -57,6 +64,7 @@ def build_message(to, subject, body, key, reply_to=None, attachments=None,
         msg["Reply-To"] = reply_to
     msg["Subject"] = subject
     msg["X-Outreach-Key"] = key
+    msg["Message-ID"] = message_id or rfc_message_id(key)
     if in_reply_to:  # Gmail threads a draft only if threadId, References/In-Reply-To and Subject agree
         msg["In-Reply-To"] = msg["References"] = in_reply_to
     msg.set_content(body)
@@ -85,9 +93,10 @@ def _run(request):
         raise
 
 
-def _ids(res):
+def _ids(res, message_id=None):
     msg = res.get("message") or {}
-    return {"draft_id": res["id"], "message_id": msg.get("id"), "thread_id": msg.get("threadId")}
+    return {"draft_id": res["id"], "message_id": msg.get("id"), "thread_id": msg.get("threadId"),
+            "rfc_message_id": message_id}
 
 
 class GmailDrafts:
@@ -146,8 +155,9 @@ class GmailDrafts:
     def create(self, to, subject, body, key, reply_to=None, attachments=None,
                thread_id=None, in_reply_to=None):
         """Returns {draft_id, message_id, thread_id}."""
-        payload = build_message(to, subject, body, key, reply_to, attachments, thread_id, in_reply_to)
-        return _ids(_run(self.svc.users().drafts().create(userId="me", body=payload)))
+        message_id = rfc_message_id(key)
+        payload = build_message(to, subject, body, key, reply_to, attachments, thread_id, in_reply_to, message_id)
+        return _ids(_run(self.svc.users().drafts().create(userId="me", body=payload)), message_id)
 
     def draft_exists(self, draft_id):
         """True/False from Gmail; network or server errors raise so callers stay 'uncertain'."""
@@ -178,8 +188,60 @@ class GmailDrafts:
             full = _run(self.svc.users().drafts().get(userId="me", id=d["id"], format="metadata"))
             headers = full.get("message", {}).get("payload", {}).get("headers", [])
             if any(h.get("name") == "X-Outreach-Key" and h.get("value") == key for h in headers):
-                return _ids(full)
+                return _ids(full, next((h.get("value") for h in headers if h.get("name", "").lower() == "message-id"),
+                                       rfc_message_id(key)))
         return None
+
+    def message(self, message_id):
+        """Metadata for one known Gmail message; never searches or reads a body."""
+        messages = getattr(self.svc.users(), "messages", None)
+        if not messages:
+            raise NotImplementedError("Gmail message metadata is unavailable")
+        res = _run(messages().get(userId="me", id=message_id, format="metadata",
+                                  metadataHeaders=THREAD_HEADERS))
+        headers = {h["name"].lower(): h["value"] for h in (res.get("payload") or {}).get("headers", [])}
+        return {"id": res["id"], "thread_id": res.get("threadId"), "labels": res.get("labelIds") or [],
+                "at": int(res.get("internalDate") or 0) / 1000, "headers": headers}
+
+    def delivery_state(self, draft_id, message_id=None, thread_id=None, key=None):
+        """Classify a known draft as present, sent, or deleted using persisted provider IDs.
+
+        Provider/network errors are deliberately allowed to escape: callers must
+        keep the outcome uncertain and must not resend on an inconclusive read.
+        """
+        try:
+            full = _run(self.svc.users().drafts().get(userId="me", id=draft_id, format="metadata"))
+            ids = _ids(full, rfc_message_id(key) if key else None)
+            return {"state": "draft", **ids}
+        except KeyError:
+            pass
+
+        checked = False
+        if message_id:
+            try:
+                msg = self.message(message_id)
+                checked = True
+                if "SENT" in msg["labels"]:
+                    return {"state": "sent", "message_id": msg["id"], "thread_id": msg["thread_id"],
+                            "rfc_message_id": msg["headers"].get("message-id"), "delivered_at": msg["at"]}
+            except KeyError:
+                checked = True
+            except NotImplementedError:
+                pass
+
+        if thread_id and self.can_sync:
+            messages = self.thread(thread_id)
+            checked = True
+            expected_rfc = rfc_message_id(key) if key else None
+            for msg in messages:
+                headers = msg["headers"]
+                matches = (message_id and msg["id"] == message_id) or (key and headers.get("x-outreach-key") == key) \
+                    or (expected_rfc and headers.get("message-id") == expected_rfc)
+                if matches and "SENT" in msg["labels"]:
+                    return {"state": "sent", "message_id": msg["id"], "thread_id": thread_id,
+                            "rfc_message_id": headers.get("message-id") or expected_rfc,
+                            "delivered_at": msg["at"]}
+        return {"state": "deleted" if checked else "unknown_missing"}
 
     def thread(self, thread_id):
         """Compact metadata for one HERMES thread: id, labels, time, a few headers. No bodies."""
