@@ -31,6 +31,7 @@ _PATTERNS = [
     (re.compile(r"\bya29\.[\w-]+"), "[oauth-token]"),
     (re.compile(r"\b1//[\w-]{10,}"), "[oauth-token]"),
     (re.compile(r"\bgAAAAA[\w-]{20,}={0,2}"), "[ciphertext]"),
+    (re.compile(r"(?i)\b(?:https?|ftp)://[^\s\"'<>]+"), "[url]"),  # source URLs, incl. userinfo and query strings
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "[email]"),
     (re.compile(r"(?<![\w/])\+?\d[\d ().-]{8,}\d(?![\w/])"), "[phone]"),
     (re.compile(r"\b[A-Za-z0-9_-]{32,}\b"), "[secret]"),  # long opaque tokens (session ids, app tokens)
