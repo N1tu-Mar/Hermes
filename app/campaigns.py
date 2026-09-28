@@ -152,6 +152,9 @@ class CampaignService:
         self.jobs.on_finish = self._job_finished
         self.outbox = Outbox(cache, gmail, clock)
         self.outbox.revalidate = self._send_still_valid
+        self.outbox.materialize = self._send_attachments
+        self.outbox.on_delivery = self._record_delivery
+        self.outbox.on_outcome = self._outbound_outcome
         self.send_every = send_every  # None lets tests drive the scheduler explicitly
 
     async def parse_intake(self, text, mode=None, subtype=None):
@@ -958,16 +961,12 @@ class CampaignService:
         if not d or d["status"] not in ("approved", "gmail_draft_created"):
             raise Rejected("only an approved speaker invitation can be marked as sent")
         self._contactable(campaign_id, cand_id)
-        self.cache.upsert_draft(campaign_id, cand_id, d["template_version"],
-                                invited_at=time.time())
-        if self.workspace:
-            cand = next(c for c in self.store.candidates(campaign_id)["candidates"] if c["candidate_id"] == cand_id)
-            profile = self.store.research(campaign_id)["profiles"].get(cand_id) or {}
-            self.workspace.record_contacted(campaign_id, cand_id, cand, profile, "invitation_sent")
-        analytics.milestone(self.cache, campaign_id, cand_id, "sent")
-        self.ledger.log_for(campaign_id, cand_id, "invitation", f"Invitation sent: {d['subject']}",
-                            {"gmail_draft_id": d.get("gmail_draft_id")})
-        self.outreach.record_sent(campaign_id, cand_id, time.time(), "manual", subject=d["subject"])
+        self._record_delivery({"send_id": f"manual:{campaign_id}:{cand_id}:{d['template_version']}",
+                               "campaign_id": campaign_id, "candidate_id": cand_id,
+                               "template_version": d["template_version"], "subject": d["subject"],
+                               "finished_at": self.now(), "gmail_draft_id": d.get("gmail_draft_id"),
+                               "gmail_message_id": None, "gmail_thread_id": None, "rfc_message_id": None,
+                               "source": "manual"})
         return {"ok": True}
 
     def mark_contacted(self, campaign_id, cand_id):
@@ -979,10 +978,12 @@ class CampaignService:
         profile = self.store.research(campaign_id)["profiles"].get(cand_id) or {}
         if self.workspace and self.workspace.is_do_not_contact(campaign_id, cand_id, cand, profile)[0]:
             raise Rejected("do-not-contact policy blocks this action")
-        self.cache.upsert_draft(campaign_id, cand_id, d["template_version"], invited_at=time.time())
-        if self.workspace: self.workspace.record_contacted(campaign_id, cand_id, cand, profile, "message_sent")
-        analytics.milestone(self.cache, campaign_id, cand_id, "sent")
-        self.outreach.record_sent(campaign_id, cand_id, time.time(), "manual", subject=d["subject"])
+        self._record_delivery({"send_id": f"manual:{campaign_id}:{cand_id}:{d['template_version']}",
+                               "campaign_id": campaign_id, "candidate_id": cand_id,
+                               "template_version": d["template_version"], "subject": d["subject"],
+                               "finished_at": self.now(), "gmail_draft_id": d.get("gmail_draft_id"),
+                               "gmail_message_id": None, "gmail_thread_id": None, "rfc_message_id": None,
+                               "source": "manual"})
         return {"ok": True}
 
     # ---------------------------------------------------------------- outcomes and notifications
@@ -998,19 +999,7 @@ class CampaignService:
         at = time.time() if at is None else float(at)
         if not sent[0]["at"] <= at <= time.time() + 60:
             raise ValueError("outcome time must be between the send time and now")
-        if analytics.milestone(self.cache, campaign_id, cand_id, outcome, at):
-            self.cache.event(campaign_id, f"{cand_id}: {outcome.replace('_', ' ')} recorded")
-            if self.workspace:
-                cand = next(c for c in self.store.candidates(campaign_id)["candidates"] if c["candidate_id"] == cand_id)
-                contact = self.workspace.contact_row(campaign_id, cand_id, cand,
-                                                     self.store.research(campaign_id)["profiles"].get(cand_id))
-                if contact:
-                    self.cache.x("INSERT INTO interactions (contact_id,campaign_id,candidate_id,kind,detail,meta,at) "
-                                 "VALUES (?,?,?,?,?,?,?)", (contact["id"], campaign_id, cand_id,
-                                                            analytics.INTERACTION_KIND[outcome], None, "{}", at))
-            if outcome == "replied":
-                analytics.notify(self.cache, f"reply:{campaign_id}:{cand_id}", "reply",
-                                 f"{cand_id}: reply recorded", campaign_id, cand_id)
+        self.outreach.set_outcome(campaign_id, cand_id, outcome, "manual", at=at)
         return analytics.timeline(self.cache, campaign_id, cand_id)
 
     def delete_outcome(self, campaign_id, cand_id, outcome):
@@ -1132,9 +1121,16 @@ class CampaignService:
             raise Rejected("candidate is excluded")
         p = self.store.research(campaign_id)["profiles"].get(cand_id) or {}
         at = self.outbox.parse_time(when) if when else None
+        ident = self._identity_for(self.store.candidates(campaign_id)["intake"])
+        attachments = []
+        if self.workspace:
+            for meta in self.workspace.attachments_by_ids(d.get("attachment_ids") or []):
+                attachments.append({"attachment_id": meta["attachment_id"], "filename": meta["display_name"],
+                                    "media_type": meta["media_type"], "size": meta["size"], "sha256": meta["sha256"]})
         payload = {"campaign_id": campaign_id, "candidate_id": cand_id, "template_version": d["template_version"],
-                   "sender": self.outbox.sender_identity(), "recipient": p.get("contact_email"),
-                   "subject": d["subject"], "body": d["body"], "attachments": [],
+                   "sender": self.outbox.sender_identity(), "reply_to": ident.get("reply_to") if ident else None,
+                   "recipient": p.get("contact_email"), "subject": d["subject"], "body": d["body"],
+                   "attachments": attachments,
                    "scheduled_at": "now" if at is None else datetime.fromtimestamp(at, timezone.utc).isoformat()}
         return payload, bool(p.get("email_verified_on_page")), at
 
@@ -1174,9 +1170,81 @@ class CampaignService:
             cand = next((c for c in self.store.candidates(cid)["candidates"] if c["candidate_id"] == cand_id), {})
             if cand.get("status") == "excluded":
                 return "candidate excluded"
-        except (KeyError, RuntimeError) as e:
+            self._send_attachments(row)
+        except (KeyError, RuntimeError, ValueError) as e:
             return f"campaign data unavailable ({e})"
         return None
+
+    def _send_attachments(self, row):
+        """Load only the approved attachment snapshot and verify every byte immediately."""
+        snapshots = json.loads(row.get("attachments") or "[]")
+        if not snapshots:
+            return []
+        if not self.workspace:
+            raise ValueError("attachment workspace is unavailable")
+        payloads = []
+        for approved in snapshots:
+            meta = self.workspace.attachment(approved["attachment_id"])
+            actual = {"filename": meta["display_name"], "media_type": meta["media_type"],
+                      "size": meta["size"], "sha256": meta["sha256"]}
+            expected = {k: approved[k] for k in actual}
+            if actual != expected:
+                raise ValueError(f"approved attachment changed: {approved['filename']}")
+            payloads.append(self.workspace.attachment_payload(meta))
+        return payloads
+
+    def _record_delivery(self, row):
+        """Apply one actual delivery to every projection; each write is independently idempotent."""
+        cid, cand, at = row["campaign_id"], row["candidate_id"], float(row["finished_at"])
+        d = self.cache.get_draft(cid, cand, row.get("template_version"))
+        if d and not d.get("invited_at"):
+            self.cache.upsert_draft(cid, cand, d["template_version"], invited_at=at)
+        analytics.milestone(self.cache, cid, cand, "sent", at)
+        contact_id = self.ledger.linked(cid, cand)
+        if contact_id and not self.cache.q(
+                "SELECT 1 FROM interactions WHERE campaign_id=? AND candidate_id=? AND json_extract(meta,'$.send_id')=?",
+                (cid, cand, row["send_id"])):
+            self.ledger.log(contact_id, "invitation", f"Outbound message delivered: {row['subject']}", cid, cand,
+                            {"send_id": row["send_id"], "gmail_message_id": row.get("gmail_message_id"),
+                             "gmail_thread_id": row.get("gmail_thread_id"),
+                             "rfc_message_id": row.get("rfc_message_id")}, at)
+        self.outreach.record_sent(cid, cand, at, row.get("source") or "gmail", row.get("rfc_message_id"),
+                                  row.get("subject"), row.get("gmail_message_id"), row.get("gmail_thread_id"))
+
+    def _outbound_outcome(self, row, outcome, at):
+        self.outreach.set_outcome(row["campaign_id"], row["candidate_id"], outcome, "manual", at=at)
+
+    def _outcome_changed(self, campaign_id, cand_id, outcome, source, at, note=""):
+        """Converge Gmail, send-queue, manual, analytics, and contact-history outcomes."""
+        if outcome in analytics.OUTCOMES:
+            fresh = analytics.milestone(self.cache, campaign_id, cand_id, outcome, at)
+            contact_id = self.ledger.linked(campaign_id, cand_id)
+            kind = analytics.INTERACTION_KIND[outcome]
+            marker = f"{source}:{outcome}:{at}"
+            if contact_id and not self.cache.q(
+                    "SELECT 1 FROM interactions WHERE campaign_id=? AND candidate_id=? AND json_extract(meta,'$.outcome_key')=?",
+                    (campaign_id, cand_id, marker)):
+                meta = json.dumps({"outcome_key": marker, "source": source})
+                if kind in ("draft", "approval", "gmail_draft", "invitation", "followup", "reply", "meeting",
+                            "decline", "bounce", "note"):
+                    self.ledger.log(contact_id, kind, note, campaign_id, cand_id,
+                                    {"outcome_key": marker, "source": source}, at)
+                else:  # analytics retains the explicit "interested" stage used by existing reports
+                    self.cache.x("INSERT INTO interactions (contact_id,campaign_id,candidate_id,kind,detail,meta,at) "
+                                 "VALUES (?,?,?,?,?,?,?)", (contact_id, campaign_id, cand_id, kind, note, meta, at))
+            if fresh:
+                self.cache.event(campaign_id, f"{cand_id}: {outcome.replace('_', ' ')} recorded")
+                if outcome == "replied":
+                    analytics.notify(self.cache, f"reply:{campaign_id}:{cand_id}", "reply",
+                                     f"{cand_id}: reply recorded", campaign_id, cand_id)
+        self.outbox.converge_outcome(campaign_id, cand_id, outcome)
+        if outcome in ("bounced", "declined", "do_not_contact"):
+            profile = self.store.research(campaign_id)["profiles"].get(cand_id) or {}
+            email = profile.get("contact_email")
+            reason = "do_not_contact" if outcome == "do_not_contact" else outcome
+            existing = self.cache.q("SELECT reason FROM suppressions WHERE email=?", ((email or "").lower(),))
+            if email and (not existing or existing[0]["reason"] != reason):
+                self.outbox.suppress(email, reason)
 
     @staticmethod
     def export_one(d, profile):

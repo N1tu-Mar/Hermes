@@ -52,7 +52,7 @@ def credentials_paths():
 def rfc_message_id(key):
     """Stable RFC Message-ID for one logical outbound message."""
     token = hashlib.sha256(str(key).encode()).hexdigest()[:32]
-    return f"<hermes-{token}@outreach.local>"
+    return f"<m-hermes-{token}@outreach.local>"
 
 
 def build_message(to, subject, body, key, reply_to=None, attachments=None,

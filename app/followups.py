@@ -25,8 +25,9 @@ log = logging.getLogger("followups")
 OUTCOMES = ("awaiting_reply", "replied", "interested", "meeting_booked", "declined", "bounced", "no_response", "closed")
 STOP_OUTCOMES = {"replied", "interested", "meeting_booked", "declined", "bounced", "closed"}
 OPEN_OUTCOMES = (None, "awaiting_reply", "no_response")  # sync may still move these
-OPEN_STEPS = ("scheduled", "generating", "needs_review", "approved", "blocked")
-DONE_STEPS = ("gmail_draft_created", "skipped", "cancelled")
+OPEN_STEPS = ("scheduled", "awaiting_delivery", "generating", "needs_review", "approved", "blocked",
+              "gmail_draft_created")
+DONE_STEPS = ("sent", "skipped", "cancelled", "deleted")
 BOUNCE_RE = re.compile(r"mailer-daemon|postmaster|mail delivery (subsystem|system)", re.I)
 SYNC_LIMIT = 25  # threads per sync run; oldest-synced first
 DAY = 86400
@@ -41,6 +42,12 @@ class Outreach:
         self.svc = svc  # CampaignService: store, cache, model, gmail, jobs, now
         self.cache = svc.cache
         self.gmail_error = None  # set when credentials fail at runtime; cleared on reconnect/restart
+        with self.cache.lock:
+            columns = {r[1] for r in self.cache.db.execute("PRAGMA table_info(followups)")}
+            for name, kind in (("gmail_message_id", "TEXT"), ("gmail_thread_id", "TEXT"),
+                               ("rfc_message_id", "TEXT"), ("sent_at", "REAL")):
+                if name not in columns:
+                    self.cache.db.execute(f"ALTER TABLE followups ADD COLUMN {name} {kind}")
 
     # ---------------------------------------------------------------- records
     def log(self, cid, cand, kind, detail="", source="system"):
@@ -60,18 +67,30 @@ class Outreach:
     def record_draft(self, cid, cand, ids, subject):
         """Initial outreach draft created in Gmail: remember its thread so sync can find replies."""
         self._set(cid, cand, gmail_thread_id=ids.get("thread_id"), gmail_message_id=ids.get("message_id"),
-                  subject=subject)
+                  rfc_message_id=ids.get("rfc_message_id"), subject=subject)
         self.log(cid, cand, "gmail_draft", f"initial draft in Gmail (thread {ids.get('thread_id')})")
 
-    def record_sent(self, cid, cand, at, source, rfc_message_id=None, subject=None):
+    def record_sent(self, cid, cand, at, source, rfc_message_id=None, subject=None,
+                    gmail_message_id=None, gmail_thread_id=None):
         """First recorded send starts the sequence. Idempotent."""
         c = self.contact(cid, cand)
         if c and c["sent_at"]:
+            patch = {}
+            for key, value in (("rfc_message_id", rfc_message_id), ("gmail_message_id", gmail_message_id),
+                               ("gmail_thread_id", gmail_thread_id)):
+                if value and (not c.get(key) or (source == "gmail" and c.get(key) != value)):
+                    patch[key] = value
+            if patch:
+                self._set(cid, cand, **patch)
             return
         intake = self.svc.store.candidates(cid)["intake"]
         fields = {"sent_at": at, "sent_source": source, "sequence": outlines.sequence_for(intake)}
         if rfc_message_id:
             fields["rfc_message_id"] = rfc_message_id
+        if gmail_message_id:
+            fields["gmail_message_id"] = gmail_message_id
+        if gmail_thread_id:
+            fields["gmail_thread_id"] = gmail_thread_id
         if subject and not (c and c["subject"]):
             fields["subject"] = subject
         self._set(cid, cand, **fields)
@@ -80,23 +99,26 @@ class Outreach:
             self.set_outcome(cid, cand, "awaiting_reply", source)
         self._schedule(cid, cand, 0, at)
 
-    def set_outcome(self, cid, cand, outcome, source, note=""):
+    def set_outcome(self, cid, cand, outcome, source, note="", at=None):
         if outcome not in OUTCOMES:
             raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}")
         old = (self.contact(cid, cand) or {}).get("outcome")
         if old == outcome:
+            self.svc._outcome_changed(cid, cand, outcome, source, at or self.svc.now(), note)
             return
-        self._set(cid, cand, outcome=outcome, outcome_at=self.svc.now())
+        at = at or self.svc.now()
+        self._set(cid, cand, outcome=outcome, outcome_at=at)
         self.log(cid, cand, "outcome", f"{old or 'none'} -> {outcome}" + (f": {note}" if note else ""), source)
         if outcome in STOP_OUTCOMES:
             self.stop(cid, cand, f"outcome {outcome}", source)
+        self.svc._outcome_changed(cid, cand, outcome, source, at, note)
 
     def stop(self, cid, cand, reason, source):
+        pending = self.cache.q("SELECT step FROM followups WHERE campaign_id=? AND candidate_id=? "
+                               "AND status='gmail_draft_created'", (cid, cand))
         n = self.cache.x(f"UPDATE followups SET status='cancelled', updated_at=? WHERE campaign_id=? AND candidate_id=? "
                          f"AND status IN ({','.join('?' * len(OPEN_STEPS))})", (self.svc.now(), cid, cand, *OPEN_STEPS))
         self._set(cid, cand, sequence_state="stopped")
-        pending = self.cache.q("SELECT step FROM followups WHERE campaign_id=? AND candidate_id=? "
-                               "AND status='gmail_draft_created'", (cid, cand))
         self.log(cid, cand, "sequence_stopped", f"{reason}; {n} pending follow-up(s) cancelled" +
                  (f". Follow-up draft(s) {[p['step'] + 1 for p in pending]} are still in Gmail Drafts: delete them there"
                   if pending else ""), source)
@@ -120,6 +142,7 @@ class Outreach:
         elif action == "do_not_contact":
             self._set(cid, cand, do_not_contact=1)
             self.stop(cid, cand, "marked do not contact", "manual")
+            self.svc._outcome_changed(cid, cand, "do_not_contact", "manual", self.svc.now())
         else:
             raise ValueError("action must be mark_sent, pause, resume, stop, or do_not_contact")
         return self.contact(cid, cand)
@@ -137,6 +160,35 @@ class Outreach:
         if self.cache.x("INSERT OR IGNORE INTO followups (campaign_id, candidate_id, step, due_at, status, updated_at) "
                         "VALUES (?,?,?,?, 'scheduled', ?)", (cid, cand, step, due, self.svc.now())):
             self.log(cid, cand, "followup_scheduled", f"follow-up {step + 1} due {_day(due)}")
+
+    def _await_delivery(self, cid, cand, step):
+        """Expose the next step without starting its clock until the prior message is delivered."""
+        c = self.contact(cid, cand)
+        if step >= len(self._steps(c)) or c["sequence_state"] == "stopped" or c["do_not_contact"]:
+            return
+        self.cache.x("INSERT OR IGNORE INTO followups (campaign_id,candidate_id,step,due_at,status,updated_at) "
+                     "VALUES (?,?,?,0,'awaiting_delivery',?)", (cid, cand, step, self.svc.now()))
+
+    def record_followup_sent(self, cid, cand, step, message):
+        """A Gmail SENT label is the only event that starts the next follow-up delay."""
+        key, at = (cid, cand, step), message["at"]
+        if not self.cache.x("UPDATE followups SET status='sent', sent_at=?, gmail_message_id=?, gmail_thread_id=?, "
+                            "rfc_message_id=?, updated_at=? WHERE campaign_id=? AND candidate_id=? AND step=? "
+                            "AND status IN ('gmail_draft_created','approved')",
+                            (at, message["id"], message.get("thread_id"), message["headers"].get("message-id"),
+                             self.svc.now(), *key)):
+            return False
+        self.log(cid, cand, "followup_sent", f"follow-up {step + 1} delivered on {_day(at)}", "gmail")
+        nxt = self.cache.q("SELECT * FROM followups WHERE campaign_id=? AND candidate_id=? AND step=?",
+                           (cid, cand, step + 1))
+        if nxt and nxt[0]["status"] == "awaiting_delivery":
+            due = at + self._steps(self.contact(cid, cand))[step + 1]["delay_days"] * DAY
+            self.cache.x("UPDATE followups SET status='scheduled',due_at=?,updated_at=? WHERE campaign_id=? AND "
+                         "candidate_id=? AND step=? AND status='awaiting_delivery'",
+                         (due, self.svc.now(), cid, cand, step + 1))
+        else:
+            self._schedule(cid, cand, step + 1, at)
+        return True
 
     def tick(self):
         """Claim due steps (once each) and queue generation; mark finished sequences no_response."""
@@ -255,9 +307,18 @@ class Outreach:
         msgs = sorted(self.svc.gmail.thread(c["gmail_thread_id"]), key=lambda m: m["at"])
         self._set(cid, cand, last_synced_at=self.svc.now(), sync_error=None)
         sent = [m for m in msgs if "SENT" in m["labels"]]
-        if sent:
-            self.record_sent(cid, cand, sent[0]["at"], "gmail", sent[0]["headers"].get("message-id"),
-                             sent[0]["headers"].get("subject"))
+        followups = self.cache.q("SELECT * FROM followups WHERE campaign_id=? AND candidate_id=?", (cid, cand))
+        followup_ids = {f.get("gmail_message_id") for f in followups if f.get("gmail_message_id")}
+        initial = next((m for m in sent if m["id"] == c.get("gmail_message_id")), None) \
+            or next((m for m in sent if m["id"] not in followup_ids), None)
+        if initial:
+            self.record_sent(cid, cand, initial["at"], "gmail", initial["headers"].get("message-id"),
+                             initial["headers"].get("subject"), initial["id"], c["gmail_thread_id"])
+        by_id = {m["id"]: m for m in sent}
+        for f in followups:
+            if f.get("gmail_message_id") in by_id:
+                message = {**by_id[f["gmail_message_id"]], "thread_id": c["gmail_thread_id"]}
+                self.record_followup_sent(cid, cand, f["step"], message)
         result = None
         for m in msgs:
             if "SENT" in m["labels"] or "DRAFT" in m["labels"]:
@@ -270,7 +331,7 @@ class Outreach:
                 continue  # already processed
             self.log(cid, cand, kind, f"from {_addr(h.get('from'))} on {_day(m['at'])}", "gmail")
             if kind != "auto_reply" and (self.contact(cid, cand) or {}).get("outcome") in OPEN_OUTCOMES:
-                self.set_outcome(cid, cand, "bounced" if kind == "bounce" else "replied", "gmail")
+                self.set_outcome(cid, cand, "bounced" if kind == "bounce" else "replied", "gmail", at=m["at"])
                 result = kind
         return result
 
@@ -289,7 +350,8 @@ class Outreach:
             st = f["status"]
             group = ("completed" if st in DONE_STEPS else "blocked" if st == "blocked"
                      else "paused" if c.get("sequence_state") == "paused"
-                     else "upcoming" if st == "scheduled" and f["due_at"] > now else "due")
+                     else "upcoming" if st == "awaiting_delivery" or (st == "scheduled" and f["due_at"] > now)
+                     else "due")
             groups[group].append(f)
         return groups
 
@@ -346,7 +408,7 @@ class Outreach:
             self.cache.x("UPDATE followups SET status='approved', updated_at=? WHERE campaign_id=? AND candidate_id=? "
                          "AND step=?", (now, *key))
             self.log(cid, cand, "followup_approved", f"follow-up {step + 1} approved", "manual")
-            self._schedule(cid, cand, step + 1, now)
+            self._await_delivery(cid, cand, step + 1)
         g = self.svc.gmail
         if not g or not c["gmail_thread_id"]:
             return {"status": "approved", "result": "approved; Gmail not connected or no thread recorded: copy the text"}
@@ -366,8 +428,12 @@ class Outreach:
                                  "AND step=?", (self.svc.now(), *key)),
             (to, f["subject"], f["body"]), dict(thread_id=c["gmail_thread_id"], in_reply_to=c["rfc_message_id"]))
         if res.get("gmail_draft_id"):
-            self.cache.x("UPDATE followups SET status='gmail_draft_created', gmail_draft_id=?, updated_at=? "
-                         "WHERE campaign_id=? AND candidate_id=? AND step=?", (res["gmail_draft_id"], now, *key))
+            ids = res.get("ids") or {}
+            self.cache.x("UPDATE followups SET status='gmail_draft_created', gmail_draft_id=?, gmail_message_id=?, "
+                         "gmail_thread_id=?, rfc_message_id=?, updated_at=? "
+                         "WHERE campaign_id=? AND candidate_id=? AND step=?",
+                         (res["gmail_draft_id"], ids.get("message_id"), ids.get("thread_id"),
+                          ids.get("rfc_message_id"), now, *key))
             self.log(cid, cand, "followup_gmail_draft", f"follow-up {step + 1} placed in Gmail Drafts (same thread)")
         return {"status": self._row(*key)["status"], **res}
 
