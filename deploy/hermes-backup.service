@@ -1,0 +1,30 @@
+# Nightly encrypted backup. Copy the encrypted files off the machine separately (see docs/remote-deployment.md).
+[Unit]
+Description=HERMES encrypted backup
+
+[Service]
+Type=oneshot
+User=hermes
+Group=hermes
+WorkingDirectory=/opt/hermes
+EnvironmentFile=/etc/hermes/hermes.env
+# Root-owned 0600 file; exposed only to this unit, never to the app process.
+LoadCredential=backup-passphrase:/etc/hermes/backup-passphrase
+ExecStart=/opt/hermes/deploy/hermes-backup.sh
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+StateDirectory=hermes
+ReadWritePaths=/var/backups/hermes

@@ -9,6 +9,7 @@ User=hermes
 Group=hermes
 WorkingDirectory=/opt/hermes
 # Holds HERMES_MODE, HERMES_PUBLIC_URL, HERMES_SECRET_KEY, DATA_ROOT, OPENAI_API_KEY (optional). Mode 0600, owned by root.
+# Never put HERMES_BACKUP_PASSPHRASE here; the app does not need it (see hermes-backup.service).
 EnvironmentFile=/etc/hermes/hermes.env
 ExecStart=/opt/hermes/.venv/bin/python -m app.api
 # SIGTERM triggers graceful shutdown: running jobs get SHUTDOWN_GRACE_SECONDS, then are checkpointed.
@@ -20,7 +21,28 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/hermes
+StateDirectory=hermes
+StateDirectoryMode=0700
+PrivateDevices=true
+PrivateUsers=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target

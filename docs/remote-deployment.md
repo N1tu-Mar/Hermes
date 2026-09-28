@@ -19,7 +19,7 @@ Follow these steps in order:
    sudo useradd --system --home /var/lib/hermes --create-home hermes
    sudo git clone <repo> /opt/hermes && cd /opt/hermes
    sudo python3.13 -m venv .venv
-   sudo .venv/bin/pip install --require-hashes --no-deps -r requirements.lock
+   sudo .venv/bin/pip install --require-hashes --no-deps -r requirements.lock  # includes pypdf (PDF research)
    ```
 
 2. **Configure** `/etc/hermes/hermes.env` (owner root, mode 0600, readable via systemd only):
@@ -44,7 +44,8 @@ Follow these steps in order:
    start in remote mode if it is set.
 
 3. **TLS proxy:** install Caddy, copy `deploy/Caddyfile` to `/etc/caddy/Caddyfile`, set your hostname, and reload.
-   Caddy obtains and renews certificates automatically. Only ports 80 and 443 should be reachable from outside.
+   Caddy obtains and renews certificates automatically. Only ports 80 and 443 should be reachable from outside. The proxy body limit (15 MiB) is sized above the base64
+   form of the 10 MiB attachment limit; raise both together.
    Port 8765 stays on loopback.
 
 4. **Service:** copy `deploy/hermes.service` to `/etc/systemd/system/`, then run:
@@ -68,9 +69,18 @@ Follow these steps in order:
    The command prompts for a password (at least 12 characters). Also available: `user-passwd`, `user-disable`,
    `user-enable`, `user-delete`, and `user-list`. Changing a password or disabling a user ends that user's sessions.
 
-6. **Backups:** add `HERMES_BACKUP_PASSPHRASE` to `/etc/hermes/hermes.env`, schedule `hermes-ops backup
-   /var/backups/hermes/$(date +%F).hbk` from cron or a systemd timer, and copy the encrypted file off the machine.
-   See [operations.md](operations.md).
+6. **Backups:** put a passphrase in `/etc/hermes/backup-passphrase` (root, mode 0600). It is loaded as a systemd
+   credential by the backup unit only; do not add it to `hermes.env`. Then enable the nightly timer:
+
+   ```bash
+   sudo install -d -o hermes -g hermes -m 0700 /var/backups/hermes
+   sudo cp deploy/hermes-backup.service deploy/hermes-backup.timer /etc/systemd/system/
+   sudo systemctl daemon-reload && sudo systemctl enable --now hermes-backup.timer
+   ```
+
+   It keeps the newest 14 files (`BACKUP_KEEP`). Copy `/var/backups/hermes` off the machine. To restore, run
+   `sudo deploy/hermes-restore.sh /var/backups/hermes/<file>.hbk`: it stops the service, restores, restarts, and waits
+   for `/readyz`. Rehearse a restore on a scratch VM before you need it. See [operations.md](operations.md).
 
 7. **Upgrades:** take a backup, `git pull`, reinstall from the lock, then `systemctl restart hermes`. Migrations run
    at startup and make their own `.bak` copies first.
