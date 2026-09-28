@@ -1,7 +1,9 @@
 """Explicit, append-only schema migrations for SQLite databases and campaign JSON.
 
-SQLite: each database module owns a MIGRATIONS list of SQL scripts. Index i is
-applied when PRAGMA user_version < i + 1, inside one transaction per step.
+SQLite: each database module owns a MIGRATIONS list. Index i is applied when
+PRAGMA user_version < i + 1, inside one transaction per step. A step is
+either a SQL script (executescript) or a callable(db) for a data migration
+too procedural for plain SQL (id remapping, matching against existing rows).
 JSON: JSON_MIGRATIONS maps a schema_version n to a function that upgrades a
 document from n to n + 1 in place.
 
@@ -13,6 +15,7 @@ Never edit an applied migration; append a new one.
 
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import time
@@ -44,10 +47,18 @@ def migrate_sqlite(db, path, migrations):
         dst = sqlite3.connect(backup)
         db.backup(dst)
         dst.close()
+        os.chmod(backup, 0o600)
         log.info("backed up %s before migrating from v%s", Path(path).name, version)
     for i in range(version, len(migrations)):
+        step = migrations[i]
         try:
-            db.executescript(f"BEGIN;\n{migrations[i]}\nPRAGMA user_version={i + 1};\nCOMMIT;")
+            if callable(step):
+                db.execute("BEGIN")
+                step(db)
+                db.execute(f"PRAGMA user_version={i + 1}")
+                db.execute("COMMIT")
+            else:
+                db.executescript(f"BEGIN;\n{step}\nPRAGMA user_version={i + 1};\nCOMMIT;")
         except Exception:
             if db.in_transaction:
                 db.execute("ROLLBACK")
@@ -68,7 +79,9 @@ def migrate_json_file(path):
     missing = [v for v in range(version, target) if v not in JSON_MIGRATIONS]
     if missing:
         raise RuntimeError(f"{path.name}: no migration registered from schema_version {missing[0]}")
-    shutil.copy2(path, path.with_name(f"{path.name}.v{version}-{_stamp()}.bak"))
+    bak = path.with_name(f"{path.name}.v{version}-{_stamp()}.bak")
+    shutil.copy2(path, bak)
+    os.chmod(bak, 0o600)
     for v in range(version, target):
         JSON_MIGRATIONS[v](path.name, doc)
         doc["schema_version"] = v + 1
