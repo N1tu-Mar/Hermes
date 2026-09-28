@@ -33,6 +33,7 @@ def atomic_write_json(path, obj):
         f.write("\n")
         f.flush()
         os.fsync(f.fileno())
+    os.chmod(tmp, 0o600)
     os.replace(tmp, path)
 
 
@@ -40,6 +41,13 @@ class CampaignStore:
     def __init__(self, data_root, template_root=ROOT):
         self.root = Path(data_root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.root.chmod(0o700)
+        for d in self.root.iterdir():
+            if d.is_dir():
+                d.chmod(0o700)
+                for f in d.iterdir():
+                    if f.is_file():
+                        f.chmod(0o600)
         self.template_root = Path(template_root)
         self._locks = {}
         self._locks_guard = threading.Lock()
@@ -70,6 +78,7 @@ class CampaignStore:
         cid = f"cmp_{datetime.now(UTC):%Y%m%d}_{secrets.token_hex(4)}"
         d = self.dir(cid)
         d.mkdir()
+        d.chmod(0o700)
         cand = json.loads((self.template_root / "candidates.json").read_text())
         res = json.loads((self.template_root / "research.json").read_text())
         for doc in (cand, res):
