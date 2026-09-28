@@ -8,3 +8,4 @@ httpx==0.28.1
 mcp==2.2.0
 openai==3.19.2
 uvicorn==0.54.0
+pypdf==6.19.0
