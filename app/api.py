@@ -13,6 +13,7 @@ credentials, so a request can only ever reach its own user's service. The
 local app token is never read, written, or accepted in this mode.
 """
 
+import asyncio
 import contextvars
 import fcntl
 import logging
@@ -26,7 +27,8 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import analytics, contracts, demo, logs
@@ -34,7 +36,10 @@ from . import cache as cache_mod
 from .cache import Cache
 from .campaigns import CampaignService, Rejected
 from .config import Config, ConfigError, load_config, load_env
+from .http_contracts import BodyLimit, DoNotContact, RunRule, TemplateArchive
 from .migrations import migrate_campaigns
+from .routes import Ctx, mount
+from .routes import pool as pool_mod
 from .sending import Blocked
 from .storage import CampaignStore
 from .workspace import Workspace
@@ -115,7 +120,7 @@ def _lock_data_root(root):
 
 def create_app(service=None, token=None, config=None):
     cfg = config or Config()
-    state = {"services": {}, "gmail_pending": {}, "started": time.time()}
+    state = {"started": time.time()}
     active_service = contextvars.ContextVar("active_service", default=None)
 
     def svc():
@@ -142,15 +147,36 @@ def create_app(service=None, token=None, config=None):
             mode = "DEMO MODE (fixture data)" if getattr(svc.model, "demo", False) else f"model {svc.model.model}"
             print(f"\n  HERMES [{mode}] -> http://127.0.0.1:{cfg.port}/?t={state['token']}\n", flush=True)
         log.info("started", extra={"status": cfg.mode})
-        yield
-        log.info("shutting down")
-        for svc in [state.get("svc"), *state["services"].values()]:
-            if svc:
-                await svc.shutdown(cfg.shutdown_grace)
-        if "accounts" in state:
-            state["accounts"].close()
-        state["lock"].close()
-        log.info("stopped")
+        maintenance = asyncio.create_task(maintain())
+        try:
+            yield
+        finally:
+            log.info("shutting down")
+            maintenance.cancel()
+            await asyncio.gather(maintenance, return_exceptions=True)
+            await pool.close()
+            if state.get("svc"):
+                await state["svc"].shutdown(cfg.shutdown_grace)
+            if "accounts" in state:
+                state["accounts"].close()
+            state["lock"].close()
+            log.info("stopped")
+
+    async def maintain():
+        """Expire OAuth states and idle services; apply retention to remote users' data on a schedule."""
+        next_retention = 0.0
+        while True:
+            try:
+                oauth.sweep()
+                await pool.evict_idle()
+                if cfg.remote and time.monotonic() >= next_retention:
+                    next_retention = time.monotonic() + pool_mod.RETENTION_INTERVAL
+                    await asyncio.to_thread(pool_mod.purge_users, state["accounts"], pool, cfg.retention_days)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("maintenance pass failed", exc_info=True)
+            await asyncio.sleep(pool_mod.MAINTENANCE_INTERVAL)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
@@ -196,10 +222,18 @@ def create_app(service=None, token=None, config=None):
         rid = rid if REQUEST_ID_RE.match(rid) else secrets.token_hex(8)
         logs.request_id.set(rid)
         started = time.monotonic()
-        problem = check(request)
+        problem, held = check(request), None
         if not problem and request.url.path.startswith("/api/"):
-            active_service.set(await current_service(request))
-        response = problem or await call_next(request)
+            try:
+                active_service.set(await acquire_service(request))
+                held = request.state.user["user_id"] if cfg.remote else None
+            except pool_mod.Busy as e:
+                problem = JSONResponse({"detail": f"server busy: {e}"}, 503, headers={"Retry-After": "5"})
+        try:
+            response = problem or await call_next(request)
+        finally:
+            if held is not None:
+                pool.release(held)
         h = response.headers
         h["X-Request-ID"] = rid
         h["X-Content-Type-Options"] = "nosniff"
@@ -227,6 +261,14 @@ def create_app(service=None, token=None, config=None):
     for exc, code in ((KeyError, 404), (Rejected, 409), (Blocked, 409), (ValueError, 400)):
         app.add_exception_handler(exc, lambda r, e, code=code: JSONResponse({"detail": str(e).strip("'")}, code))
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, exc):
+        errors = exc.errors()
+        if any(e["type"] == "json_invalid" for e in errors):
+            return JSONResponse({"detail": "malformed JSON body"}, 400)
+        detail = "; ".join(f"{'.'.join(map(str, e['loc'][1:])) or 'body'}: {e['msg']}" for e in errors)
+        return JSONResponse({"detail": detail}, 422)
+
     # ------------------------------------------------------------ per-request service
     def user_service(uid):
         acc = state["accounts"]
@@ -243,13 +285,19 @@ def create_app(service=None, token=None, config=None):
         svc.startup()
         return svc
 
-    async def current_service(request: Request):
+    pool = pool_mod.ServicePool(
+        user_service, cfg.shutdown_grace, pool_mod.MAX_ACTIVE_SERVICES, pool_mod.IDLE_EVICT_SECONDS
+    )
+    oauth = pool_mod.OAuthStates()
+
+    async def acquire_service(request: Request):
+        """Middleware only: remote users hold a pooled service for the duration of the request."""
         if not cfg.remote:
             return state["svc"]
-        uid = request.state.user["user_id"]  # the guard guarantees a session on every /api route
-        if uid not in state["services"]:  # runs on the event loop: no await between check and set
-            state["services"][uid] = user_service(uid)
-        return state["services"][uid]
+        return await pool.acquire(request.state.user["user_id"])  # the guard guarantees a session on every /api route
+
+    async def current_service(request: Request):
+        return active_service.get()
 
     Svc = Annotated[CampaignService, Depends(current_service)]
 
@@ -311,85 +359,6 @@ def create_app(service=None, token=None, config=None):
         resp.delete_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict")
         return resp
 
-    def _remote_user(request):
-        if not cfg.remote:
-            raise HTTPException(404)
-        return request.state.user["user_id"]
-
-    @app.get("/api/account")
-    def account(request: Request, s: Svc):
-        uid = _remote_user(request)
-        return {
-            "user": request.state.user["username"],
-            "gmail_connected": s.gmail is not None,
-            "openai_key_set": state["accounts"].get_secret(uid, "openai_api_key") is not None,
-            "demo": getattr(s.model, "demo", False),
-        }
-
-    async def _reload_service(uid):
-        old = state["services"].pop(uid, None)
-        if old:
-            await old.shutdown(cfg.shutdown_grace)
-
-    @app.put("/api/account/openai-key")
-    async def set_openai_key(request: Request, body: dict = Body(...)):
-        uid = _remote_user(request)
-        key = str(body.get("api_key", "")).strip()
-        if not key.startswith("sk-") or len(key) < 20:
-            raise ValueError("that does not look like an OpenAI API key")
-        state["accounts"].put_secret(uid, "openai_api_key", key)
-        await _reload_service(uid)
-        return {"openai_key_set": True}
-
-    @app.delete("/api/account/openai-key")
-    async def delete_openai_key(request: Request):
-        uid = _remote_user(request)
-        state["accounts"].delete_secret(uid, "openai_api_key")
-        await _reload_service(uid)
-        return {"openai_key_set": False}
-
-    @app.delete("/api/account/gmail")
-    async def disconnect_gmail(request: Request):
-        uid = _remote_user(request)
-        state["accounts"].delete_secret(uid, "gmail_token")
-        await _reload_service(uid)
-        return {"gmail_connected": False}
-
-    @app.get("/auth/gmail/start")
-    def gmail_start(request: Request):
-        uid = _remote_user(request)
-        from .gmail import credentials_paths, web_flow
-
-        if not credentials_paths()[0].exists():
-            raise Rejected("the operator has not configured a Gmail OAuth client (GMAIL_CREDENTIALS)")
-        flow = web_flow(cfg.public_url + "/auth/gmail/callback")
-        url, st = flow.authorization_url(access_type="offline", prompt="consent")
-        pending = state["gmail_pending"]
-        for k in [k for k, v in pending.items() if time.time() - v[2] > 600]:
-            pending.pop(k)
-        pending[st] = (uid, getattr(flow, "code_verifier", None), time.time())
-        return RedirectResponse(url, 303)
-
-    @app.get("/auth/gmail/callback")
-    async def gmail_callback(request: Request, code: str = ""):
-        if not cfg.remote:
-            raise HTTPException(404)
-        st = request.query_params.get("state", "")
-        # The state is single-use, 10-minute, and bound to the user who started the flow; the session cookie
-        # (SameSite=Strict) is not sent on this cross-site redirect, so the state is what identifies the user.
-        uid, verifier, at = state["gmail_pending"].pop(st, (None, None, 0))
-        if not uid or time.time() - at > 600 or not code:
-            raise HTTPException(400, "unknown or expired Gmail authorization; start again")
-        from .gmail import web_flow
-
-        flow = web_flow(cfg.public_url + "/auth/gmail/callback")
-        if verifier:
-            flow.code_verifier = verifier
-        flow.fetch_token(code=code)
-        state["accounts"].put_secret(uid, "gmail_token", flow.credentials.to_json())
-        await _reload_service(uid)
-        return RedirectResponse("/", 303)
-
     # ------------------------------------------------------------ campaigns
     @app.get("/api/status")
     def status():
@@ -431,8 +400,8 @@ def create_app(service=None, token=None, config=None):
         return svc().workspace.duplicate_template(tid, body)
 
     @app.post("/api/templates/{tid}/archive")
-    def archive_template(tid: str, body: dict = Body(default={})):
-        return svc().workspace.archive_template(tid, body.get("archived", True))
+    def archive_template(tid: str, body: TemplateArchive | None = None):
+        return svc().workspace.archive_template(tid, (body or TemplateArchive()).archived)
 
     @app.get("/api/content")
     def content(identity_id: int | None = None):
@@ -490,26 +459,6 @@ def create_app(service=None, token=None, config=None):
     @app.get("/api/campaigns/{cid}")
     def get(cid: str, s: Svc):
         return s.get(cid)
-
-    @app.delete("/api/campaigns/{cid}")
-    def delete_campaign(cid: str, s: Svc):
-        return s.delete_campaign(cid)
-
-    @app.patch("/api/campaigns/{cid}")
-    def patch_campaign(cid: str, body: dict = Body(...)):
-        if "name" in body:
-            svc().rename(cid, body["name"])
-        if "archived" in body:
-            svc().archive(cid, bool(body["archived"]))
-        return svc().ledger.campaign_meta(cid)
-
-    @app.post("/api/campaigns/{cid}/duplicate")
-    def duplicate(cid: str, body: dict = Body(default={})):
-        return {"campaign_id": svc().duplicate(cid, body.get("name"))}
-
-    @app.post("/api/campaigns/{cid}/delete")
-    def delete(cid: str, body: dict = Body(default={})):
-        return svc().delete(cid, body.get("confirm"))
 
     @app.get("/api/campaigns/{cid}/export.csv")
     def export_campaign_csv(cid: str):
@@ -646,19 +595,17 @@ def create_app(service=None, token=None, config=None):
         return svc().workspace.create_rule(cid, body)
 
     @app.post("/api/campaigns/{cid}/rules/{rid}/run")
-    def run_rule(cid: str, rid: str, body: dict = Body(default={})):
-        return svc().run_rule(cid, rid, bool(body.get("dry_run", True)))
+    def run_rule(cid: str, rid: str, body: RunRule | None = None):
+        return svc().run_rule(cid, rid, (body or RunRule()).dry_run)
 
     @app.put("/api/campaigns/{cid}/candidates/{cand}/do-not-contact")
-    def do_not_contact(cid: str, cand: str, body: dict = Body(...)):
+    def do_not_contact(cid: str, cand: str, body: DoNotContact):
         svc()._require(cid)
         candidate = next((c for c in svc().store.candidates(cid)["candidates"] if c["candidate_id"] == cand), None)
         if not candidate:
             raise KeyError(cand)
         profile = svc().store.research(cid)["profiles"].get(cand) or {}
-        return svc().workspace.set_do_not_contact(
-            cid, cand, candidate, profile, bool(body.get("do_not_contact", True)), body.get("reason")
-        )
+        return svc().workspace.set_do_not_contact(cid, cand, candidate, profile, body.do_not_contact, body.reason)
 
     @app.get("/api/campaigns/{cid}/candidates/{cand}")
     def detail(cid: str, cand: str, s: Svc):
@@ -683,10 +630,6 @@ def create_app(service=None, token=None, config=None):
     @app.post("/api/campaigns/{cid}/drafts/{cand}/mark-contacted")
     def mark_contacted(cid: str, cand: str):
         return svc().mark_contacted(cid, cand)
-
-    @app.post("/api/campaigns/{cid}/gmail-drafts")
-    async def gmail_drafts(cid: str, s: Svc, body: dict = Body(...)):
-        return {"results": await s.create_gmail_drafts(cid, body.get("candidate_ids") or [])}
 
     @app.post("/api/campaigns/{cid}/gmail-sync")
     async def gmail_sync(cid: str):
@@ -776,67 +719,9 @@ def create_app(service=None, token=None, config=None):
         analytics.mark(svc().cache, nid, "read_at" if action == "read" else "dismissed_at")
         return {"ok": True}
 
-    # ------------------------------------------------------------ sending (opt-in, off by default)
-    @app.get("/api/sending")
-    def sending_status():
-        return {**svc().outbox.status(), "audit": svc().outbox.global_audit(20)}
-
-    @app.patch("/api/sending/settings")
-    def sending_settings(body: dict = Body(...)):
-        return svc().outbox.update_settings(body)
-
-    @app.post("/api/sending/pause")
-    def sending_pause():
-        return svc().outbox.pause(True)
-
-    @app.post("/api/sending/unpause")
-    def sending_unpause():
-        return svc().outbox.pause(False)
-
-    @app.post("/api/sending/emergency-stop")
-    def sending_emergency_stop():
-        return svc().outbox.emergency_stop()
-
-    @app.get("/api/suppressions")
-    def suppressions():
-        return svc().outbox.suppressions()
-
-    @app.post("/api/suppressions")
-    def suppress(body: dict = Body(...)):
-        return svc().outbox.suppress(body.get("email"), body.get("reason", "do_not_contact"))
-
-    @app.patch("/api/campaigns/{cid}/sending")
-    def campaign_sending(cid: str, body: dict = Body(...)):
-        svc()._require(cid)
-        return svc().outbox.set_campaign_enabled(cid, bool(body.get("enabled")))
-
-    @app.post("/api/campaigns/{cid}/sends/preview")
-    def send_preview(cid: str, body: dict = Body(...)):
-        return svc().preview_send(cid, str(body.get("candidate_id", "")), body.get("scheduled_at") or None)
-
-    @app.post("/api/campaigns/{cid}/sends")
-    def send_confirm(cid: str, body: dict = Body(...)):
-        return svc().confirm_send(
-            cid, str(body.get("candidate_id", "")), str(body.get("approval_hash", "")), body.get("scheduled_at") or None
-        )
-
-    @app.get("/api/campaigns/{cid}/sends")
-    def send_list(cid: str):
-        svc()._require(cid)
-        return svc().outbox.list(cid)
-
-    @app.get("/api/sends/{send_id}")
-    def send_detail(send_id: str):
-        return svc().outbox.detail(send_id)
-
-    @app.post("/api/sends/{send_id}/cancel")
-    def send_cancel(send_id: str):
-        return svc().outbox.view(svc().outbox.cancel(send_id))
-
-    @app.post("/api/sends/{send_id}/outcome")
-    def send_outcome(send_id: str, body: dict = Body(...)):
-        return svc().outbox.view(svc().outbox.record_outcome(send_id, body.get("outcome")))
-
+    # Route groups live in app/routes/ and are mounted automatically (sending, campaign lifecycle, account/OAuth).
+    mount(app, Ctx(cfg, state, svc, Svc, pool, oauth))
+    app.add_middleware(BodyLimit)  # added last = outermost: oversize bodies get 413 before anything else runs
     return app
 
 
