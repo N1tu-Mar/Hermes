@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Outreach Desk</title>
+<title>HERMES</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <header class="bar">
-  <a class="brand" href="#" data-go="home">Outreach Desk</a>
+  <a class="brand" href="#" data-go="home">HERMES</a>
   <span id="mode-badge" class="badge" hidden></span>
   <nav class="nav" aria-label="Sections">
     <a href="#" data-go="campaigns">Campaigns</a>
@@ -147,7 +147,7 @@
         <button id="btn-stop" class="ghost">Stop</button>
         <button id="btn-resume" class="ghost">Resume</button>
         <button id="btn-edit-intake" class="ghost">Edit ask &amp; background</button>
-        <button id="btn-delete-campaign" class="ghost">Delete campaign</button>
+        <button id="btn-delete-campaign" class="ghost">Archive or delete…</button>
       </div>
     </div>
 
@@ -293,7 +293,7 @@
         </form><pre id="template-preview" class="preview"></pre><div id="template-history" class="note"></div>
       </section>
       <section class="panel"><h3>Sender identities &amp; reusable content</h3>
-        <form id="identity-form" class="compact-form"><label>Display name<input name="display_name" required></label><label>Biography<textarea name="biography" required></textarea></label><label>Signature<input name="signature"></label><button class="small">Add sender</button></form>
+        <p class="note">Manage who emails are from on the <a href="#" data-go="identities">Identities</a> screen.</p>
         <form id="content-form" class="compact-form"><label>Sender<select name="identity_id"><option value="">Any sender</option></select></label><label>Kind<select name="kind"><option>signature</option><option>event_description</option><option>club_description</option><option>personal_introduction</option><option>call_to_action</option><option>supporting_links</option></select></label><label>Name<input name="name" required></label><label>Content<textarea name="body" required></textarea></label><button class="small">Add content</button></form>
         <div id="content-list" class="library-list"></div>
       </section>
@@ -432,7 +432,29 @@
   </form>
 </dialog>
 
+<dialog id="input-dialog" aria-labelledby="input-dialog-title">
+  <form method="dialog" class="send-confirm">
+    <h3 id="input-dialog-title"></h3>
+    <p id="input-dialog-help" class="note"></p>
+    <label id="input-dialog-label">Value<input id="input-dialog-field" autocomplete="off"></label>
+    <div class="actions">
+      <button value="cancel" class="ghost" formnovalidate>Cancel</button>
+      <button id="input-dialog-ok" value="ok" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="confirm-dialog" aria-labelledby="confirm-dialog-title">
+  <form method="dialog" class="send-confirm">
+    <h3 id="confirm-dialog-title"></h3>
+    <p id="confirm-dialog-help" class="note"></p>
+    <div class="actions">
+      <button value="cancel" class="ghost">Cancel</button>
+      <button value="ok" class="stop">Delete</button>
+    </div>
+  </form>
+</dialog>
+
 <div id="toast" class="toast" role="status" hidden></div>
-<script src="/static/app.js"></script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>
