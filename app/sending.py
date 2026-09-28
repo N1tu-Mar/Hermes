@@ -6,10 +6,10 @@ stopped, the Gmail token was granted gmail.send, a human confirmed that exact
 message (hash of recipient, sender, subject, body, attachments, time), it is
 outside quiet hours, and hourly/daily limits and spacing allow it.
 
-Each send is draft -> drafts.send. Gmail deletes a draft when it sends it and
-refuses to send it twice, so after a timeout or a crash we reconcile by asking
-whether our draft still exists: gone = sent, present = not sent (safe retry).
-A draft deleted by hand in that window is therefore recorded as sent.
+Each send is draft -> drafts.send. After a timeout or crash we reconcile the
+persisted Gmail draft-message/thread IDs: a SENT message is delivered, a
+present draft is definitely unsent, and an absent draft with no SENT message is
+deleted. Any inconclusive provider read remains uncertain and is never resent.
 
 Everything lives in the app's SQLite file, so the queue survives restarts.
 Approved content columns and the audit log are protected by triggers.
@@ -33,14 +33,15 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS suppressions (email TEXT PRIMARY KEY, reason TEXT, at REAL);
 CREATE TABLE IF NOT EXISTS sends (
   send_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE, campaign_id TEXT, candidate_id TEXT,
-  template_version TEXT, sender TEXT, recipient TEXT, subject TEXT, body TEXT, attachments TEXT,
+  template_version TEXT, sender TEXT, reply_to TEXT, recipient TEXT, subject TEXT, body TEXT, attachments TEXT,
   scheduled_at REAL, approval TEXT, approval_hash TEXT, approved_at REAL,
-  status TEXT, gmail_draft_id TEXT, gmail_message_id TEXT, attempts INTEGER DEFAULT 0,
-  attempted_at REAL, finished_at REAL, error TEXT, updated_at REAL);
+  status TEXT, gmail_draft_id TEXT, gmail_draft_message_id TEXT, gmail_message_id TEXT,
+  gmail_thread_id TEXT, rfc_message_id TEXT, attempts INTEGER DEFAULT 0,
+  attempted_at REAL, finished_at REAL, delivery_applied_at REAL, error TEXT, updated_at REAL);
 CREATE UNIQUE INDEX IF NOT EXISTS one_live_send_per_draft
   ON sends (campaign_id, candidate_id, template_version) WHERE status NOT IN ('cancelled', 'failed');
 CREATE TRIGGER IF NOT EXISTS approved_content_immutable
-  BEFORE UPDATE OF idempotency_key, campaign_id, candidate_id, template_version, sender, recipient, subject, body,
+  BEFORE UPDATE OF idempotency_key, campaign_id, candidate_id, template_version, sender, reply_to, recipient, subject, body,
                    attachments, scheduled_at, approval, approval_hash, approved_at ON sends
   BEGIN SELECT RAISE(ABORT, 'approved send content is immutable'); END;
 CREATE TABLE IF NOT EXISTS send_audit (
@@ -53,7 +54,8 @@ CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON send_audit
 
 DEFAULTS = {"enabled": False, "paused": False, "emergency_stop": False, "timezone": "America/New_York",
             "quiet_start": "20:00", "quiet_end": "08:00", "daily_limit": 20, "hourly_limit": 5, "spacing_seconds": 120}
-STATES = ("scheduled", "sending", "sent", "cancelled", "failed", "uncertain", "bounced", "replied")
+STATES = ("scheduled", "sending", "sent", "cancelled", "failed", "uncertain", "deleted",
+          "bounced", "replied", "declined", "do_not_contact")
 SUPPRESS_REASONS = ("do_not_contact", "bounced", "declined")
 EMAIL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$")
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -73,8 +75,25 @@ class Outbox:
     def __init__(self, cache, gmail=None, clock=time.time):
         self.cache, self.gmail, self.clock = cache, gmail, clock
         self.revalidate = lambda row: None  # set by CampaignService: reason the approved draft is stale, or None
+        self.materialize = lambda row: []  # exact approved attachment bytes; also revalidates their hashes
+        self.on_delivery = lambda row: None
+        self.on_outcome = lambda row, outcome, at: None
         with cache.lock:
             cache.db.executescript(SCHEMA)
+            columns = {r[1] for r in cache.db.execute("PRAGMA table_info(sends)")}
+            for name in ("reply_to", "gmail_draft_message_id", "gmail_thread_id", "rfc_message_id"):
+                if name not in columns:
+                    cache.db.execute(f"ALTER TABLE sends ADD COLUMN {name} TEXT")
+            if "delivery_applied_at" not in columns:
+                cache.db.execute("ALTER TABLE sends ADD COLUMN delivery_applied_at REAL")
+            # An older database already has the trigger with the old column set.
+            cache.db.executescript("""
+                DROP TRIGGER IF EXISTS approved_content_immutable;
+                CREATE TRIGGER approved_content_immutable
+                BEFORE UPDATE OF idempotency_key, campaign_id, candidate_id, template_version, sender, reply_to,
+                                 recipient, subject, body, attachments, scheduled_at, approval, approval_hash, approved_at
+                ON sends BEGIN SELECT RAISE(ABORT, 'approved send content is immutable'); END;
+            """)
 
     # ------------------------------------------------------------ plumbing
     def _rowcount(self, sql, args=()):
@@ -84,6 +103,15 @@ class Outbox:
     def _update(self, send_id, **f):
         f["updated_at"] = self.clock()
         self.cache.x(f"UPDATE sends SET {', '.join(f'{k}=?' for k in f)} WHERE send_id=?", (*f.values(), send_id))
+
+    def _transition(self, send_id, old, new, **fields):
+        """Compare-and-set one legal state transition."""
+        if new not in STATES:
+            raise ValueError(f"unknown send state {new}")
+        old = (old,) if isinstance(old, str) else tuple(old)
+        fields.update(status=new, updated_at=self.clock())
+        sql = f"UPDATE sends SET {', '.join(f'{k}=?' for k in fields)} WHERE send_id=? AND status IN ({','.join('?' * len(old))})"
+        return self._rowcount(sql, (*fields.values(), send_id, *old))
 
     def audit(self, send_id, event, **detail):
         self.cache.x("INSERT INTO send_audit (send_id, at, event, detail) VALUES (?,?,?,?)",
@@ -275,10 +303,10 @@ class Outbox:
         sid = f"snd_{secrets.token_hex(6)}"
         try:
             self.cache.x("""INSERT INTO sends (send_id, idempotency_key, campaign_id, candidate_id, template_version, sender,
-                            recipient, subject, body, attachments, scheduled_at, approval, approval_hash, approved_at, status,
-                            updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'scheduled',?)""",
+                            reply_to, recipient, subject, body, attachments, scheduled_at, approval, approval_hash,
+                            approved_at, status, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'scheduled',?)""",
                          (sid, idem, payload["campaign_id"], payload["candidate_id"], payload["template_version"],
-                          payload["sender"], payload["recipient"], payload["subject"], payload["body"],
+                          payload["sender"], payload.get("reply_to"), payload["recipient"], payload["subject"], payload["body"],
                           json.dumps(payload["attachments"]), when, json.dumps(payload, sort_keys=True), approval_hash, now, now))
         except sqlite3.IntegrityError:
             raise Blocked("this draft already has a scheduled or sent message; cancel it first")
@@ -304,17 +332,31 @@ class Outbox:
         if outcome not in ("bounced", "replied", "declined"):
             raise ValueError("outcome must be bounced, replied, or declined")
         r = self.row(send_id)
-        if r["status"] not in ("sent", "replied", "bounced"):
+        if r["status"] not in ("sent", "replied", "bounced", "declined"):
             raise Blocked(f"only sent messages have outcomes (this one is {r['status']})")
-        self._update(send_id, status="bounced" if outcome == "bounced" else "replied")
+        state = "bounced" if outcome == "bounced" else "declined" if outcome == "declined" else "replied"
+        self._transition(send_id, ("sent", "replied", "bounced", "declined"), state)
         self.audit(send_id, "outcome", outcome=outcome)
         if outcome != "replied":
             self.suppress(r["recipient"], outcome)
-        return self.row(send_id)
+        current = self.row(send_id)
+        self.on_outcome(current, outcome, self.clock())
+        return current
+
+    def converge_outcome(self, campaign_id, candidate_id, outcome):
+        """Project a Gmail/manual outcome onto every delivered send without emitting callbacks."""
+        state = {"bounced": "bounced", "declined": "declined", "do_not_contact": "do_not_contact"}.get(
+            outcome, "replied" if outcome in ("replied", "interested", "meeting_booked") else None)
+        if not state:
+            return
+        for row in self._rows("campaign_id=? AND candidate_id=? AND status IN ('sent','replied','bounced','declined')",
+                              (campaign_id, candidate_id)):
+            if row["status"] != state and self._transition(row["send_id"], row["status"], state):
+                self.audit(row["send_id"], "outcome_converged", outcome=outcome, state=state)
 
     def locked(self, campaign_id, candidate_id, template_version=None):
         """A draft whose message is in flight or already sent must not be edited or regenerated."""
-        sql = "campaign_id=? AND candidate_id=? AND status IN ('sending','uncertain','sent','bounced','replied')"
+        sql = "campaign_id=? AND candidate_id=? AND status IN ('sending','uncertain','sent','bounced','replied','declined','do_not_contact')"
         args = [campaign_id, candidate_id]
         if template_version:
             sql += " AND template_version=?"
@@ -327,9 +369,11 @@ class Outbox:
         for r in self._rows("status='sending'"):
             self._update(r["send_id"], status="uncertain", error="process stopped during send")
             self.audit(r["send_id"], "recovered_after_crash")
+        self._apply_pending_deliveries()
 
     def tick(self):
         """One scheduler step: reconcile unknown outcomes, then send at most one due message. Returns send_id or None."""
+        self._apply_pending_deliveries()
         for r in self._rows("status='uncertain'"):
             self._reconcile(r)
         now = self.clock()
@@ -363,13 +407,25 @@ class Outbox:
         try:
             did = r["gmail_draft_id"]
             if not did:
-                created = self.gmail.create(r["recipient"], r["subject"], r["body"], key)
+                attachments = self.materialize(r)
+                created = self.gmail.create(r["recipient"], r["subject"], r["body"], key,
+                                            reply_to=r.get("reply_to"), attachments=attachments)
                 did = created.get("draft_id") if isinstance(created, dict) else created
-                self._update(sid, gmail_draft_id=did)
-                self.audit(sid, "gmail_draft_created", gmail_draft_id=did)
+                ids = created if isinstance(created, dict) else {}
+                self._update(sid, gmail_draft_id=did, gmail_draft_message_id=ids.get("message_id"),
+                             gmail_thread_id=ids.get("thread_id"), rfc_message_id=ids.get("rfc_message_id"))
+                self.audit(sid, "gmail_draft_created", gmail_draft_id=did,
+                           gmail_draft_message_id=ids.get("message_id"), gmail_thread_id=ids.get("thread_id"),
+                           rfc_message_id=ids.get("rfc_message_id"))
             if self._halted():  # last check before the irreversible call
                 self._update(sid, status="cancelled" if self.settings()["emergency_stop"] else "scheduled")
                 self.audit(sid, "held_before_send", emergency_stop=self.settings()["emergency_stop"])
+                return
+            current = self.row(sid)
+            reason = self.recipient_problem(current["recipient"], True) or self.revalidate(current)
+            if reason:
+                self._transition(sid, "sending", "cancelled", error=reason, finished_at=self.clock())
+                self.audit(sid, "cancelled", reason=reason, before="drafts.send")
                 return
             stage = "send"
             res = self.gmail.send_draft(did)
@@ -383,8 +439,19 @@ class Outbox:
                 self._update(sid, status="uncertain", error=err)
                 self.audit(sid, "uncertain", error=err, http_status=status)
             return
-        self._update(sid, status="sent", gmail_message_id=res.get("id"), finished_at=self.clock(), error=None)
-        self.audit(sid, "sent", provider_response={k: res.get(k) for k in ("id", "threadId", "labelIds")})
+        delivered_at, rfc_id = self.clock(), self.row(sid).get("rfc_message_id")
+        try:
+            meta = self.gmail.message(res.get("id")) if res.get("id") else None
+            if meta:
+                delivered_at = meta.get("at") or delivered_at
+                rfc_id = meta.get("headers", {}).get("message-id") or rfc_id
+        except NotImplementedError:
+            pass
+        except Exception as e:
+            self.audit(sid, "sent_metadata_pending", error=f"{type(e).__name__}: {str(e)[:200]}")
+        self._mark_sent(sid, delivered_at, message_id=res.get("id"), thread_id=res.get("threadId"),
+                        rfc_message_id=rfc_id,
+                        provider_response={k: res.get(k) for k in ("id", "threadId", "labelIds")})
 
     def _reconcile(self, r):
         sid = r["send_id"]
@@ -392,16 +459,35 @@ class Outbox:
             did = r["gmail_draft_id"]
             if not did:
                 found = self.gmail.find_by_key(f"send:{r['idempotency_key']}")
-                did = found.get("draft_id") if isinstance(found, dict) else found
-                if did:
-                    self._update(sid, gmail_draft_id=did)
-            sent = bool(did) and not self.gmail.draft_exists(did)
+                if not found:
+                    self.audit(sid, "reconcile_inconclusive", reason="draft id and idempotency key not found")
+                    return
+                did = found["draft_id"]
+                self._update(sid, gmail_draft_id=did, gmail_draft_message_id=found.get("message_id"),
+                             gmail_thread_id=found.get("thread_id"), rfc_message_id=found.get("rfc_message_id"))
+                r = self.row(sid)
+            state = self.gmail.delivery_state(did, r.get("gmail_draft_message_id"),
+                                              r.get("gmail_thread_id"), f"send:{r['idempotency_key']}")
         except Exception as e:
             self.audit(sid, "reconcile_failed", error=f"{type(e).__name__}: {str(e)[:200]}")
             return
-        if sent:
-            self._update(sid, status="sent", finished_at=self.clock(), error=None)
-            self.audit(sid, "sent", reconciled=True, provider_response={"draft_consumed": did})
+        if state["state"] == "sent":
+            self._mark_sent(sid, state.get("delivered_at") or self.clock(), message_id=state.get("message_id"),
+                            thread_id=state.get("thread_id"), rfc_message_id=state.get("rfc_message_id"),
+                            reconciled=True, provider_response={"draft_consumed": did})
+        elif state["state"] == "deleted":
+            if self._transition(sid, "uncertain", "deleted", finished_at=self.clock(),
+                                error="Gmail draft was deleted without a matching SENT message"):
+                self.audit(sid, "deleted", reconciled=True, gmail_draft_id=did)
+        elif state["state"] == "unknown_missing":
+            if not r.get("gmail_draft_message_id") and not r.get("gmail_thread_id"):
+                # Compatibility for pre-metadata adapters. Real Gmail always supplies the
+                # IDs used by the deleted-vs-sent classifier above.
+                self._mark_sent(sid, self.clock(), rfc_message_id=r.get("rfc_message_id"), reconciled=True,
+                                provider_response={"draft_consumed": did, "legacy_adapter": True})
+            else:
+                self.audit(sid, "reconcile_inconclusive", reason="provider cannot classify missing draft")
+            return
         elif r["attempts"] >= MAX_ATTEMPTS:
             self._update(sid, status="failed", finished_at=self.clock())
             self.audit(sid, "failed", reconciled=True, reason="not sent after max attempts")
@@ -409,6 +495,35 @@ class Outbox:
             nxt = "cancelled" if self.settings()["emergency_stop"] else "scheduled"
             self._update(sid, status=nxt)
             self.audit(sid, "reconciled_not_sent", next=nxt, gmail_draft_id=did)
+
+    def _mark_sent(self, send_id, delivered_at, message_id=None, thread_id=None, rfc_message_id=None, **detail):
+        fields = {"finished_at": delivered_at, "error": None}
+        if message_id:
+            fields["gmail_message_id"] = message_id
+        if thread_id:
+            fields["gmail_thread_id"] = thread_id
+        if rfc_message_id:
+            fields["rfc_message_id"] = rfc_message_id
+        if not self._transition(send_id, ("sending", "uncertain"), "sent", **fields):
+            return False
+        self.audit(send_id, "sent", delivered_at=delivered_at, **detail)
+        self._apply_delivery(self.row(send_id))
+        return True
+
+    def _apply_delivery(self, row):
+        if row.get("delivery_applied_at"):
+            return
+        try:
+            self.on_delivery(row)
+        except Exception as e:
+            self.audit(row["send_id"], "delivery_effects_pending", error=f"{type(e).__name__}: {str(e)[:200]}")
+            log.exception("delivery side effects pending for %s", row["send_id"])
+            return
+        self._update(row["send_id"], delivery_applied_at=self.clock())
+
+    def _apply_pending_deliveries(self):
+        for row in self._rows("status IN ('sent','replied','bounced','declined') AND delivery_applied_at IS NULL"):
+            self._apply_delivery(row)
 
     # ------------------------------------------------------------ views
     def status(self):
@@ -421,11 +536,12 @@ class Outbox:
                 "sent_last_day": len(times), "counts": counts}
 
     def view(self, r):
-        return {**{k: r[k] for k in ("send_id", "campaign_id", "candidate_id", "template_version", "sender", "recipient",
-                                     "subject", "body", "status", "attempts", "error", "gmail_draft_id", "gmail_message_id")},
+        return {**{k: r[k] for k in ("send_id", "campaign_id", "candidate_id", "template_version", "sender", "reply_to",
+                                     "recipient", "subject", "body", "status", "attempts", "error", "gmail_draft_id",
+                                     "gmail_draft_message_id", "gmail_message_id", "gmail_thread_id", "rfc_message_id")},
                 "attachments": json.loads(r["attachments"] or "[]"), "scheduled_at": r["scheduled_at"],
                 "scheduled_local": self.local(r["scheduled_at"]), "approved_at": r["approved_at"],
-                "finished_at": r["finished_at"]}
+                "finished_at": r["finished_at"], "delivery_applied_at": r["delivery_applied_at"]}
 
     def list(self, campaign_id):
         return [self.view(r) for r in self._rows("campaign_id=?", (campaign_id,))]
