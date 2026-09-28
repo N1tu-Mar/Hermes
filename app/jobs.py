@@ -20,7 +20,7 @@ from .logs import request_id as request_ctx
 log = logging.getLogger("jobs")
 
 
-class QueueSaturated(RuntimeError):
+class QueueSaturated(asyncio.QueueFull):
     """The selected worker lane has no room for another queued job."""
 
 
