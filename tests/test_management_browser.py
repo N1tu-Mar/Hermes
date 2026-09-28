@@ -154,7 +154,7 @@ def test_contacts_search_edit_timeline_and_review(page, server):
     assert reviews, "fixture must have produced a duplicate review"
     assert page.locator("#reviews").is_visible()
     page.locator("#reviews [data-act=new]").first.click()
-    page.wait_for_function(f"document.querySelectorAll('#reviews [data-key]').length < {len(reviews)} || document.querySelector('#reviews').hidden")
+    page.locator("#toast", has_text="new contact").wait_for()
     assert len(svc.ledger.reviews()) == len(reviews) - 1
 
 
@@ -192,6 +192,7 @@ def test_identities_crud_and_intake_selection(page, server):
     page.click("#confirm-dialog button[value=ok]")
     page.locator("#toast", has_text="used by").wait_for()  # still referenced by the campaign
     page.locator("#toast", has_text="used by").wait_for(state="hidden", timeout=6000)
+    page.errors[:] = [e for e in page.errors if "409" not in e]  # the deliberate rejection above
     page.click(".nav a[data-go=campaigns]")
     page.click(f"#campaign-rows tr[data-key={cid}] [data-act=archive]")
     page.locator(f"#campaign-rows tr[data-key={cid}]").wait_for(state="detached")

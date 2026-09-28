@@ -30,8 +30,9 @@ const reload = () => keepFocus($("#view-identities"), async () => { items = awai
 
 export async function openIdentities() {
   show("identities");
+  fill(null);  // before the fetch: a slow response must not wipe what the user already typed
   loading(list, "Loading identities…");
-  try { items = await api("/identities"); render(); fill(null); } catch (e) { failed(list, e); }
+  try { items = await api("/identities"); render(); } catch (e) { failed(list, e); }
 }
 routes.identities = openIdentities;
 
