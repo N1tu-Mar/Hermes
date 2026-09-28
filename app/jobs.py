@@ -1,9 +1,8 @@
 """Bounded worker coordinator: two research workers, one writer, bounded queues.
 
-Request handlers only enqueue (via a background task, so a full queue gives
-backpressure without blocking the HTTP response). Job state lives in SQLite
-so a restart can mark interrupted work resumable. Each job logs under its own
-job_id and the request_id that queued it.
+Request handlers enqueue only when the selected lane has capacity. Job state
+lives in SQLite so a restart can mark interrupted work resumable. Each job
+logs under its own job_id and the request_id that queued it.
 
 Shutdown: close() stops workers taking new items, gives running jobs `grace`
 seconds to finish, cancels the rest, and checkpoints every unfinished job as
@@ -19,6 +18,10 @@ from .logs import job_id as job_ctx
 from .logs import request_id as request_ctx
 
 log = logging.getLogger("jobs")
+
+
+class QueueSaturated(RuntimeError):
+    """The selected worker lane has no room for another queued job."""
 
 
 class Coordinator:
@@ -65,12 +68,37 @@ class Coordinator:
         if self.closing:
             raise RuntimeError("shutting down; not accepting new jobs")
         job_id = f"job_{secrets.token_hex(5)}"
-        self.cache.put_job(job_id, campaign_id, kind, candidate_id, "queued")
-        self.stopped.discard(campaign_id)
         item = (job_id, campaign_id, kind, candidate_id, request_ctx.get())
-        # thread-safe: sync route handlers run in a threadpool
-        asyncio.run_coroutine_threadsafe(self.queues[self.lane(kind)].put(item), self.loop)
+
+        # Sync route handlers run in a threadpool. Wait for the loop-owned
+        # admission decision so QueueSaturated is visible to their caller and
+        # there is never a durable "queued" row without an in-memory item.
+        try:
+            on_worker_loop = asyncio.get_running_loop() is self.loop
+        except RuntimeError:
+            on_worker_loop = False
+        if on_worker_loop:
+            self._admit(item)
+        else:
+            asyncio.run_coroutine_threadsafe(self._admit_async(item), self.loop).result()
         return job_id
+
+    async def _admit_async(self, item):
+        self._admit(item)
+
+    def _admit(self, item):
+        if self.closing:
+            raise RuntimeError("shutting down; not accepting new jobs")
+        job_id, campaign_id, kind, candidate_id, _ = item
+        q = self.queues[self.lane(kind)]
+        if q.full():
+            raise QueueSaturated(f"{self.lane(kind)} job queue is saturated")
+
+        # This method runs without an await on the queue's event loop. Capacity
+        # cannot change between this check, the durable row, and put_nowait.
+        self.cache.put_job(job_id, campaign_id, kind, candidate_id, "queued")
+        q.put_nowait(item)
+        self.stopped.discard(campaign_id)
 
     async def _run(self, lane):
         q = self.queues[lane]
