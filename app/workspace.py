@@ -9,6 +9,8 @@ import secrets
 import time
 from pathlib import Path
 
+from .ledger import Ledger
+
 
 TEMPLATE_CATEGORIES = {
     "professor_outreach", "startup_outreach", "speaker_invitation",
@@ -114,8 +116,13 @@ def render_template(template, values):
 class Workspace:
     def __init__(self, cache, data_root):
         self.cache = cache
+        self.ledger = Ledger(cache)
         self.attachment_root = Path(data_root).resolve() / "attachments"
         self.attachment_root.mkdir(parents=True, exist_ok=True)
+        self.attachment_root.chmod(0o700)
+        for f in self.attachment_root.iterdir():
+            if f.is_file():
+                f.chmod(0o600)
         self.seed_templates()
 
     # templates --------------------------------------------------------
@@ -418,45 +425,40 @@ class Workspace:
 
     # immutable policy -------------------------------------------------
     def contact_row(self, campaign_id, candidate_id, candidate=None, profile=None):
-        linked = self.cache.q("""SELECT c.* FROM contact_links l JOIN contacts c ON c.id=l.contact_id
-                               WHERE l.campaign_id=? AND l.candidate_id=?""", (campaign_id, candidate_id))
-        if linked: return linked[0]
-        profile, candidate = profile or {}, candidate or {}
-        email = (profile.get("contact_email") or "").lower() or None
+        """The canonical global contact linked or matching this candidate, or None. Read-only:
+        never creates a contact, links one, or opens a review (see Ledger.match)."""
+        cid = self.ledger.linked(campaign_id, candidate_id)
+        if cid:
+            return self.ledger.contact(cid)
+        candidate, profile = candidate or {}, profile or {}
+        email = profile.get("contact_email")
         url = profile.get("profile_url") or candidate.get("profile_url")
-        if email:
-            rows = self.cache.q("SELECT * FROM contacts WHERE lower(email)=?", (email,))
-            if rows: return rows[0]
-        if url:
-            rows = self.cache.q("SELECT * FROM contacts WHERE profile_url=?", (url,))
-            if rows: return rows[0]
-        return None
+        name = candidate.get("name") or profile.get("name")
+        if not name:
+            return None
+        m = self.ledger.match(name, candidate.get("organization"), email, url)
+        return self.ledger.contact(m[1]) if m[0] == "match" else None
 
     def is_do_not_contact(self, campaign_id, candidate_id, candidate=None, profile=None):
         row = self.contact_row(campaign_id, candidate_id, candidate, profile)
         return bool(row and row["do_not_contact"]), row
 
-    def set_do_not_contact(self, campaign_id, candidate_id, candidate, profile, value=True, reason=None):
+    def _linked_contact(self, campaign_id, candidate_id, candidate, profile):
+        """contact_row, but links (or creates) the global contact when nothing is linked yet."""
         row = self.contact_row(campaign_id, candidate_id, candidate, profile)
-        now = _now()
-        if not row:
-            name = candidate.get("name") or profile.get("name") or candidate_id
-            email = profile.get("contact_email")
-            with self.cache.lock:
-                cur = self.cache.db.execute(
-                    """INSERT INTO contacts (name,organization,role,email,profile_url,name_key,do_not_contact,
-                       dnc_reason,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                    (name, candidate.get("organization"), candidate.get("role"), email,
-                     candidate.get("profile_url"), _slug(name + " " + (candidate.get("organization") or "")),
-                     int(value), reason, "campaign", now, now))
-                contact_id = cur.lastrowid
-                self.cache.db.execute("INSERT OR REPLACE INTO contact_links VALUES (?,?,?,?)",
-                                      (campaign_id, candidate_id, contact_id, now))
-            row = self.cache.q("SELECT * FROM contacts WHERE id=?", (contact_id,))[0]
-        else:
-            self.cache.x("UPDATE contacts SET do_not_contact=?,dnc_reason=?,updated_at=? WHERE id=?",
-                         (int(value), reason, now, row["id"]))
-            row = self.cache.q("SELECT * FROM contacts WHERE id=?", (row["id"],))[0]
+        if row:
+            return row
+        candidate, profile = candidate or {}, profile or {}
+        cand = {**candidate, "candidate_id": candidate_id,
+               "profile_url": candidate.get("profile_url") or profile.get("profile_url")}
+        cid = self.ledger.link_candidate(campaign_id, cand, profile.get("contact_email"), source="campaign")
+        if cid is None:
+            raise ValueError("candidate match is ambiguous; resolve the open contact review first")
+        return self.ledger.contact(cid)
+
+    def set_do_not_contact(self, campaign_id, candidate_id, candidate, profile, value=True, reason=None):
+        row = self._linked_contact(campaign_id, candidate_id, candidate, profile)
+        row = self.ledger.update_contact(row["id"], {"do_not_contact": value, "dnc_reason": reason})
         if value:
             self.invalidate_candidate_approvals(campaign_id, candidate_id, "contact is on the do-not-contact list")
         return row
@@ -472,13 +474,9 @@ class Workspace:
         return changed
 
     def record_contacted(self, campaign_id, candidate_id, candidate, profile, kind="sent"):
-        row = self.set_do_not_contact(campaign_id, candidate_id, candidate, profile, False, None) \
-            if not self.contact_row(campaign_id, candidate_id, candidate, profile) else \
-            self.contact_row(campaign_id, candidate_id, candidate, profile)
-        now = _now()
-        self.cache.x("UPDATE contacts SET last_contacted_at=?,updated_at=? WHERE id=?", (now, now, row["id"]))
-        self.cache.x("INSERT INTO interactions (contact_id,campaign_id,candidate_id,kind,detail,meta,at) VALUES (?,?,?,?,?,?,?)",
-                     (row["id"], campaign_id, candidate_id, kind, None, "{}", now))
+        row = self._linked_contact(campaign_id, candidate_id, candidate, profile)
+        self.ledger.log(row["id"], "invitation", detail=kind, campaign_id=campaign_id, candidate_id=candidate_id)
+        return self.ledger.contact(row["id"])
 
     def policies(self):
         return {"manual_review_required": True, "do_not_contact_enforced": True,

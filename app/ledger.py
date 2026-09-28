@@ -12,6 +12,7 @@ Only emails verified on a page or entered by the user are stored.
 """
 import json
 import re
+import sqlite3
 import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
@@ -445,7 +446,10 @@ class Ledger:
 
     def delete_identity(self, identity_id):
         self.identity(identity_id)
-        self.c.x("DELETE FROM identities WHERE id=?", (identity_id,))
+        try:
+            self.c.x("DELETE FROM identities WHERE id=?", (identity_id,))
+        except sqlite3.IntegrityError:
+            raise ValueError("identity is still referenced by an attachment or reusable content item")
 
     # ------------------------------------------------------------ campaign metadata
     def campaign_meta(self, campaign_id):

@@ -17,6 +17,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 from .migrations import migrate_sqlite
 SCHEMA_V1 = """
@@ -145,22 +146,146 @@ CREATE TABLE IF NOT EXISTS campaign_meta (
   campaign_id TEXT PRIMARY KEY, name TEXT, archived INTEGER NOT NULL DEFAULT 0, updated_at REAL);
 """
 
+def _migrate_v3(db):
+    """Make people/person_links canonical.
+
+    V1's `contacts`/`contact_links` predate the ledger; V2 meant to point
+    `interactions` at people(id) but its CREATE TABLE IF NOT EXISTS was a
+    no-op (V1 had already created it, FK'd to contacts(id)), so interactions
+    written before this migration may carry either id space. This step:
+    merges every contacts row into people (matching by verified email, then
+    profile URL, then name_key; ambiguous matches open a person_review
+    instead of guessing), explicitly remapping each contacts.id to its
+    target people.id so a collision between the two id spaces can never mix
+    timelines; rebuilds interactions with the correct FK, remapping rows
+    whose contact_id was never a valid people.id; carries contact_links over
+    to person_links (an existing person_links row for the same campaign
+    candidate wins); and empties (not drops, so app/ops.py's `forget` can
+    keep querying both tables) the legacy contacts/contact_links tables.
+    Also folds in the column additions that used to run as unversioned
+    ALTERs on every startup.
+    """
+    from .ledger import RELATIONSHIPS, canonical_url, name_key, norm_email
+
+    def find_target(email, url, nk):
+        if email:
+            row = db.execute("SELECT id FROM people WHERE email=?", (email,)).fetchone()
+            if row:
+                return row["id"], []
+        by_url = [r["id"] for r in db.execute("SELECT id FROM people WHERE profile_url=?", (url,))] if url else []
+        if len(by_url) == 1:
+            return by_url[0], []
+        by_name = [r["id"] for r in db.execute("SELECT id FROM people WHERE name_key=?", (nk,))]
+        if len(by_name) == 1 and not by_url:
+            return by_name[0], []
+        return None, sorted(set(by_url) | set(by_name))
+
+    now = time.time()
+    remap = {}
+    for c in [dict(r) for r in db.execute("SELECT * FROM contacts ORDER BY id")]:
+        email, url, nk = norm_email(c["email"]), canonical_url(c["profile_url"]), name_key(c["name"], c["organization"])
+        target, ambiguous = find_target(email, url, nk)
+        if target is None:
+            cols = ("name", "organization", "role", "email", "profile_url", "name_key", "notes", "tags",
+                    "relationship", "do_not_contact", "dnc_reason", "last_contacted_at", "owner", "source",
+                    "created_at", "updated_at")
+            values = (c["name"], c["organization"], c["role"], email, url, nk, c["notes"] or "",
+                      c["tags"] or "[]", c["relationship"] or "new", c["do_not_contact"] or 0, c["dnc_reason"],
+                      c["last_contacted_at"], c["owner"], c["source"], c["created_at"] or now, now)
+            target = db.execute(f"INSERT INTO people ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                                values).lastrowid
+            if ambiguous:
+                person = {"name": c["name"], "organization": c["organization"], "role": c["role"],
+                          "email": email, "profile_url": url}
+                db.execute("INSERT INTO person_reviews (campaign_id, candidate_id, person, options, reason, "
+                          "created_at) VALUES (NULL, NULL, ?, ?, ?, ?)",
+                          (json.dumps(person, sort_keys=True), json.dumps(sorted({*ambiguous, target})),
+                           "legacy contact migration found more than one possible match", now))
+        else:
+            row = dict(db.execute("SELECT * FROM people WHERE id=?", (target,)).fetchone())
+            patch = {}
+            for field, value in (("email", email), ("profile_url", url), ("role", c["role"]),
+                                 ("owner", c["owner"]), ("source", c["source"])):
+                if value and not row[field]:
+                    patch[field] = value
+            if c["notes"] and c["notes"] not in (row["notes"] or ""):
+                patch["notes"] = ((row["notes"] or "") + "\n" + c["notes"]).strip()
+            row_tags, c_tags = json.loads(row["tags"] or "[]"), json.loads(c["tags"] or "[]")
+            merged_tags = sorted(set(row_tags) | set(c_tags))
+            if merged_tags != sorted(row_tags):
+                patch["tags"] = json.dumps(merged_tags)
+            if c["do_not_contact"] and not row["do_not_contact"]:
+                patch["do_not_contact"], patch["dnc_reason"] = 1, row["dnc_reason"] or c["dnc_reason"]
+            if (c["last_contacted_at"] or 0) > (row["last_contacted_at"] or 0):
+                patch["last_contacted_at"] = c["last_contacted_at"]
+            c_rank = RELATIONSHIPS.index(c["relationship"]) if c["relationship"] in RELATIONSHIPS else 0
+            row_rank = RELATIONSHIPS.index(row["relationship"]) if row["relationship"] in RELATIONSHIPS else 0
+            if c_rank > row_rank:
+                patch["relationship"] = c["relationship"]
+            if patch:
+                patch["updated_at"] = now
+                db.execute(f"UPDATE people SET {', '.join(k + '=?' for k in patch)} WHERE id=?",
+                          (*patch.values(), target))
+        remap[c["id"]] = target
+
+    # A contact_id already equal to a valid people.id is not proof it was written against people:
+    # contacts.id and people.id are independent sequences, so a legacy id can coincidentally collide
+    # with an unrelated people.id. A campaign-scoped row is trusted as already-canonical only when
+    # person_links (populated solely by the ledger, never by this migration) confirms that exact id for
+    # that campaign/candidate; a global row (no campaign/candidate) can only exist via the contacts API,
+    # which requires an id already valid in people, so a colliding id there is always already correct.
+    people_ids = {r["id"] for r in db.execute("SELECT id FROM people")}
+    canonical_link = {(r["campaign_id"], r["candidate_id"]): r["contact_id"]
+                       for r in db.execute("SELECT campaign_id, candidate_id, contact_id FROM person_links")}
+    for row in [dict(r) for r in db.execute("SELECT * FROM interactions")]:
+        old_cid = row["contact_id"]
+        if old_cid not in remap:
+            continue
+        if old_cid not in people_ids:
+            needs_remap = True
+        elif row["campaign_id"] is not None:
+            needs_remap = canonical_link.get((row["campaign_id"], row["candidate_id"])) != old_cid
+        else:
+            needs_remap = False
+        if needs_remap:
+            db.execute("UPDATE interactions SET contact_id=? WHERE id=?", (remap[old_cid], row["id"]))
+    db.execute("""CREATE TABLE interactions_v3 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+      campaign_id TEXT, candidate_id TEXT, kind TEXT NOT NULL, detail TEXT, meta TEXT, at REAL NOT NULL)""")
+    db.execute("""INSERT INTO interactions_v3 (id, contact_id, campaign_id, candidate_id, kind, detail, meta, at)
+                 SELECT id, contact_id, campaign_id, candidate_id, kind, detail, meta, at FROM interactions
+                 WHERE contact_id IN (SELECT id FROM people)""")
+    db.execute("DROP TABLE interactions")
+    db.execute("ALTER TABLE interactions_v3 RENAME TO interactions")
+    db.execute("CREATE INDEX IF NOT EXISTS interactions_contact ON interactions(contact_id, at)")
+
+    for row in [dict(r) for r in db.execute("SELECT * FROM contact_links")]:
+        new_id = remap.get(row["contact_id"])
+        if new_id is not None:
+            db.execute("INSERT OR IGNORE INTO person_links VALUES (?,?,?,?)",
+                      (row["campaign_id"], row["candidate_id"], new_id, row["linked_at"]))
+    db.execute("DELETE FROM contact_links")
+    db.execute("DELETE FROM contacts")
+
+    # SCHEMA_V1's CREATE TABLE IF NOT EXISTS already has these columns for brand-new databases;
+    # only a database created before that column existed in the string still needs the ALTER.
+    usage_cols = {r[1] for r in db.execute("PRAGMA table_info(usage)")}
+    for name in ("pages_fetched", "bytes_fetched", "pages_skipped"):
+        if name not in usage_cols:
+            db.execute(f"ALTER TABLE usage ADD COLUMN {name} INTEGER DEFAULT 0")
+    draft_cols = {r[1] for r in db.execute("PRAGMA table_info(drafts)")}
+    for name, kind in (("attachment_ids", "TEXT"), ("content_ids", "TEXT"),
+                       ("template_id", "TEXT"), ("template_number", "INTEGER")):
+        if name not in draft_cols:
+            db.execute(f"ALTER TABLE drafts ADD COLUMN {name} {kind}")
+    if "started_at" not in {r[1] for r in db.execute("PRAGMA table_info(jobs)")}:
+        db.execute("ALTER TABLE jobs ADD COLUMN started_at REAL")
+
+
 # Append only; entry i is applied when PRAGMA user_version <= i.
 # V1 keeps IF NOT EXISTS because databases created before versioning already have those tables.
-MIGRATIONS = [SCHEMA_V1, SCHEMA_V2]
-
-
-def migrate(db):
-    version = db.execute("PRAGMA user_version").fetchone()[0]
-    if version > len(MIGRATIONS):
-        raise RuntimeError(f"database schema v{version} is newer than this app (v{len(MIGRATIONS)})")
-    for i in range(version, len(MIGRATIONS)):
-        try:
-            db.executescript(f"BEGIN;\n{MIGRATIONS[i]}\nPRAGMA user_version={i + 1};\nCOMMIT;")
-        except Exception:
-            if db.in_transaction:
-                db.execute("ROLLBACK")
-            raise
+# V3 is a callable (see migrate_sqlite): the contacts->people merge needs matching logic, not just SQL.
+MIGRATIONS = [SCHEMA_V1, SCHEMA_V2, _migrate_v3]
 
 
 PAGE_TTL = 7 * 86400
@@ -177,17 +302,16 @@ class Cache:
         self.db.execute("PRAGMA secure_delete=ON")
         self.path = path
         migrate_sqlite(self.db, path, MIGRATIONS)
-        cols = {r[1] for r in self.db.execute("PRAGMA table_info(usage)")}
-        for name in ("pages_fetched", "bytes_fetched", "pages_skipped"):
-            if name not in cols:
-                self.db.execute(f"ALTER TABLE usage ADD COLUMN {name} INTEGER DEFAULT 0")
-        draft_cols = {r[1] for r in self.db.execute("PRAGMA table_info(drafts)")}
-        for name, kind in (("attachment_ids", "TEXT"), ("content_ids", "TEXT"),
-                           ("template_id", "TEXT"), ("template_number", "INTEGER")):
-            if name not in draft_cols:
-                self.db.execute(f"ALTER TABLE drafts ADD COLUMN {name} {kind}")
-        if "started_at" not in {r[1] for r in self.db.execute("PRAGMA table_info(jobs)")}:
-            self.db.execute("ALTER TABLE jobs ADD COLUMN started_at REAL")
+        # Enforced only after migrating: older migration steps predate some FKs and must be free to
+        # reshape tables (e.g. rebuilding interactions) without every intermediate state satisfying them.
+        self.db.execute("PRAGMA foreign_keys=ON")
+        violations = self.db.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError(f"{Path(path).name}: {len(violations)} foreign key violation(s) after migration")
+        if str(path) != ":memory:":
+            db_path = Path(path)
+            db_path.parent.chmod(0o700)
+            db_path.chmod(0o600)
         # Usage from before usage_log existed has no timestamp: kept as undated (at NULL), excluded by date filters.
         self.db.execute("""INSERT INTO usage_log (campaign_id, at, api_calls, cache_hits, input_tokens, output_tokens)
                            SELECT campaign_id, NULL, api_calls, cache_hits, input_tokens, output_tokens FROM usage
@@ -343,8 +467,8 @@ class Cache:
                                BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END""")
             for table in ("drafts", "jobs", "usage", "events", "corrections", "person_links", "contact_links",
                           "person_reviews", "milestones", "usage_log", "notifications", "outreach_contacts",
-                          "followups", "gmail_seen", "contact_log", "campaign_assets", "campaign_rules",
-                          "rule_executions", "campaign_meta", "sends"):
+                          "followups", "gmail_seen", "contact_log", "campaign_assets",
+                          "rule_executions", "campaign_rules", "campaign_meta", "sends"):
                 self.db.execute(f"DELETE FROM {table} WHERE campaign_id=?", (campaign_id,))  # noqa: S608 fixed names
             self.db.execute("DELETE FROM research_cache WHERE key LIKE ?", (campaign_id + ":%",))
 
