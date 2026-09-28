@@ -720,6 +720,7 @@ def create_app(service=None, token=None, config=None):
         return {"ok": True}
 
     # Route groups live in app/routes/ and are mounted automatically (sending, campaign lifecycle, account/OAuth).
+    app.state.pool, app.state.oauth = pool, oauth
     mount(app, Ctx(cfg, state, svc, Svc, pool, oauth))
     app.add_middleware(BodyLimit)  # added last = outermost: oversize bodies get 413 before anything else runs
     return app
