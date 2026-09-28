@@ -1201,6 +1201,13 @@ class CampaignService:
         if d and not d.get("invited_at"):
             self.cache.upsert_draft(cid, cand, d["template_version"], invited_at=at)
         analytics.delivery(self.cache, cid, cand, at)
+        if self.workspace:
+            candidate = next(c for c in self.store.candidates(cid)["candidates"] if c["candidate_id"] == cand)
+            profile = self.store.research(cid)["profiles"].get(cand) or {}
+            legacy = self.workspace.contact_row(cid, cand, candidate, profile) or \
+                self.workspace.set_do_not_contact(cid, cand, candidate, profile, False, None)
+            self.cache.x("UPDATE contacts SET last_contacted_at=MAX(COALESCE(last_contacted_at,0),?),updated_at=? "
+                         "WHERE id=?", (at, self.now(), legacy["id"]))
         contact_id = self.ledger.linked(cid, cand)
         if contact_id and not self.cache.q(
                 "SELECT 1 FROM interactions WHERE campaign_id=? AND candidate_id=? AND json_extract(meta,'$.send_id')=?",
