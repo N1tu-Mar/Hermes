@@ -34,7 +34,14 @@ def test_pricing_valid_pair_negative_and_lone(tmp_path):
 
 @pytest.mark.parametrize(
     "url",
-    ["https://h.example/app", "https://h.example?x=1", "https://u:p@h.example", "https://h.example:99999", "ftp://h", "h.example"],
+    [
+        "https://h.example/app",
+        "https://h.example?x=1",
+        "https://u:p@h.example",
+        "https://h.example:99999",
+        "ftp://h",
+        "h.example",
+    ],
 )
 def test_public_url_must_be_bare_origin(tmp_path, url):
     bad(tmp_path, "HERMES_PUBLIC_URL", HERMES_PUBLIC_URL=url)

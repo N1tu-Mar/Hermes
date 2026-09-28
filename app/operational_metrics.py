@@ -84,7 +84,8 @@ class Metrics:
         if data_root is not None:
             try:
                 d = shutil.disk_usage(data_root)
-                out["disk"] = {"total_bytes": d.total, "free_bytes": d.free, "used_pct": round(100 * d.used / d.total, 1)}
+                pct = round(100 * d.used / d.total, 1)
+                out["disk"] = {"total_bytes": d.total, "free_bytes": d.free, "used_pct": pct}
             except OSError:
                 pass
         return out
