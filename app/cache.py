@@ -250,7 +250,7 @@ def _migrate_v3(db):
         if needs_remap:
             db.execute("UPDATE interactions SET contact_id=? WHERE id=?", (remap[old_cid], row["id"]))
     db.execute("""CREATE TABLE interactions_v3 (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL REFERENCES people(id),
+      id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
       campaign_id TEXT, candidate_id TEXT, kind TEXT NOT NULL, detail TEXT, meta TEXT, at REAL NOT NULL)""")
     db.execute("""INSERT INTO interactions_v3 (id, contact_id, campaign_id, candidate_id, kind, detail, meta, at)
                  SELECT id, contact_id, campaign_id, candidate_id, kind, detail, meta, at FROM interactions
