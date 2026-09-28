@@ -97,7 +97,7 @@ def test_redirect_hop_is_revalidated_and_public_to_private_is_blocked(tmp_path):
         cache = Cache(tmp_path / "cache.db")
         fetcher = Fetcher(cache)  # client=None -> real DNS pinning stays active
         fetcher.client = httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
-        with pytest.raises(FetchError, match="non-public"):
+        with pytest.raises(FetchError, match="not a public address"):
             await fetcher.fetch("https://example.com/start")
 
     asyncio.run(run())
