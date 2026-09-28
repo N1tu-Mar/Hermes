@@ -2,6 +2,7 @@ import { $, $$, esc, safeUrl, LIST, SUBTYPE_LABEL, OUTCOMES, label, day, when, A
 import { refresh, selectedTemplate } from "./workspace.js";
 import { fillIntake } from "./intake.js";
 import { go } from "./nav.js";
+import { download, openImport } from "./csvio.js";
 
 // ---------------------------------------------------------------- batch controls
 const need = () => { if (!state.selected.size) throw new Error("Tick at least one person first."); return [...state.selected]; };
@@ -47,6 +48,9 @@ $("#btn-edit-intake").addEventListener("click", run(async () => {
   $("#missing-question").hidden = true;
   show("intake");
 }));
+$("#btn-export-csv").addEventListener("click", run(() => download(`/campaigns/${state.cid}/export.csv`, `${state.cid}-candidates.csv`)));
+$("#btn-import-cands").addEventListener("click", () => openImport($("#cand-import"),
+  { path: `/campaigns/${state.cid}/import`, done: refresh, hint: "Columns: name (required), organization, role, email, profile_url, tags, notes." }));
 $("#btn-gmail").addEventListener("click", run(async () => {
   const approved = (state.view?.candidates || []).filter((c) => c.draft_status === "approved").map((c) => c.candidate_id);
   if (!approved.length) throw new Error("No approved drafts yet. Approve a draft first.");

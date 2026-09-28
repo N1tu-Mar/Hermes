@@ -49,6 +49,7 @@ export function toast(msg, isError = false) {
 
 // Wrap an event handler: errors become toasts, and the triggering button/form is disabled while it runs so a
 // second click or Enter cannot double-submit. Focus returns to the trigger if it survives the re-render.
+let memo = null;  // logical focus target (row key + action) of the running handler; survives the re-render
 export const run = (fn) => async (...a) => {
   const ev = a[0] instanceof Event ? a[0] : null;
   const form = ev?.target instanceof HTMLFormElement ? ev.target : null;
@@ -57,25 +58,26 @@ export const run = (fn) => async (...a) => {
   if (gate && (gate.dataset.busy || btn?.disabled)) { ev.preventDefault?.(); return; }
   if (gate) { gate.dataset.busy = "1"; gate.setAttribute("aria-busy", "true"); }
   const hadFocus = btn && document.activeElement === btn;
+  if (btn) memo = { key: btn.closest("[data-key]")?.dataset.key, act: btn.dataset.act, id: btn.id };
   if (btn) btn.disabled = true;
   try { return await fn(...a); } catch (e) { toast(e.message, true); }
   finally {
     if (gate) { delete gate.dataset.busy; gate.removeAttribute("aria-busy"); }
     if (btn) { btn.disabled = false; if (hadFocus && btn.isConnected) btn.focus(); }
+    memo = null;
   }
 };
 
 // Re-render a container while keeping keyboard focus on the same logical control (data-key row + data-act button).
 export async function keepFocus(root, render) {
   const a = document.activeElement;
-  const inside = a && root.contains(a) ? a : null;
-  const key = inside?.closest("[data-key]")?.dataset.key, act = inside?.dataset.act, id = inside?.id;
+  const at = a && root.contains(a) ? { key: a.closest("[data-key]")?.dataset.key, act: a.dataset.act, id: a.id } : memo;
   await render();
-  const target = (id && document.getElementById(id))
-    || (key != null && ((act && $(`[data-key="${CSS.escape(key)}"] [data-act="${act}"]`, root)) || $(`[data-key="${CSS.escape(key)}"] button, [data-key="${CSS.escape(key)}"]`, root)))
-    || null;
-  if (inside && target) target.focus();
-  else if (inside) (root.querySelector("h2, h3, [tabindex]") || root).focus?.();
+  if (!at) return;
+  const row = at.key != null ? `[data-key="${CSS.escape(at.key)}"]` : null;
+  const target = (at.id && document.getElementById(at.id)) || (row && ((at.act && $(`${row} [data-act="${at.act}"]`, root)) || $(`${row} button, ${row}`, root)));
+  if (target && !target.disabled) target.focus();
+  else if (a && root.contains(a)) { const h = $("h2, h3", root) || root; h.tabIndex = -1; h.focus(); }
 }
 
 export function show(view) {

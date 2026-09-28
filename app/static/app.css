@@ -283,3 +283,12 @@ dialog::backdrop { background: #1b243399; }
 .account-panel { position: absolute; right: 0; top: 28px; z-index: 5; width: min(320px, calc(100vw - 32px)); padding: 12px;
   background: var(--sheet); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; display: grid; gap: 10px; }
 .login { max-width: 360px; }
+
+/* management screens */
+.toast.error { background: var(--scarlet); }
+[aria-busy="true"] { cursor: progress; }
+form[aria-busy="true"] { opacity: .7; }
+#input-dialog, #confirm-dialog { max-width: 480px; width: calc(100% - 32px); }
+.import-preview { margin: 8px 0; }
+tr[data-key][aria-selected="true"] { background: #eef3fb; }
+tr[data-key]:focus-visible { outline-offset: -2px; }

@@ -48,9 +48,6 @@ $("#btn-template-archive").addEventListener("click", run(async () => {
   const id = $("#template-form").elements.template_id.value; if (!id) throw new Error("Choose a template first.");
   await api(`/templates/${id}/archive`, { method: "POST", body: { archived: true } }); clearTemplateForm(); await loadLibrary();
 }));
-$("#identity-form").addEventListener("submit", run(async (e) => {
-  e.preventDefault(); await api("/identities", { method: "POST", body: Object.fromEntries(new FormData(e.target)) }); e.target.reset(); await loadLibrary();
-}));
 $("#content-form").addEventListener("submit", run(async (e) => {
   e.preventDefault(); const body = Object.fromEntries(new FormData(e.target)); body.identity_id = body.identity_id ? +body.identity_id : null;
   await api("/content", { method: "POST", body }); e.target.reset(); await loadLibrary();

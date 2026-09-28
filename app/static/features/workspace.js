@@ -64,6 +64,7 @@ export async function refresh() {
   const it = view.intake;
   $("#work-kind").textContent = `${it.mode} · ${SUBTYPE_LABEL[it.subtype] || ""}`;
   $("#work-title").textContent = it.raw_request || [...(it.research_areas || []), ...(it.industries || [])].join(", ");
+  $("#archived-banner").hidden = !view.archived;
   $("#btn-followup").hidden = it.subtype !== "speaker_mentor";
   $("#mode-badge").hidden = false;
   $("#mode-badge").textContent = view.demo ? "DEMO DATA" : "LIVE";
