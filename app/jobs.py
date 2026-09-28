@@ -25,7 +25,7 @@ class QueueSaturated(asyncio.QueueFull):
 
 
 class Coordinator:
-    def __init__(self, cache, handlers, research_workers=2, queue_size=16):
+    def __init__(self, cache, handlers, research_workers=2, queue_size=512):
         self.cache = cache
         self.handlers = handlers  # kind -> async fn(campaign_id, candidate_id)
         self.queues = {"research": asyncio.Queue(queue_size), "write": asyncio.Queue(queue_size)}
