@@ -185,6 +185,16 @@ the interrupted work and skips people who are already researched or drafted. Thi
 One process owns a data root at a time. It holds an exclusive lock on `DATA_ROOT/.lock`, and a second instance, or
 a restore, refuses to start while the lock is held. The lock uses `fcntl`, so it supports macOS and Linux only.
 
+Multiple agents work this repo in parallel across sibling worktrees (one branch each) sharing one `.git`.
+Only one may merge into `main` at a time: wrap the merge in `scripts/merge_lock.py`, which holds an exclusive
+`fcntl` lock on `.git/merge.lock` (shared across every worktree) for the duration of the command, e.g.
+
+```
+.venv/bin/python scripts/merge_lock.py -- git merge --no-ff agent/x -m "..." && git push origin main
+```
+
+A second agent's call blocks until the first releases it (or fails after `--timeout` seconds if given).
+
 ## Capacity
 
 `test_load.py` runs 3 campaigns of 100 people (the per-campaign maximum) at the same time. It researches and drafts
