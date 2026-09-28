@@ -230,8 +230,14 @@ def _verify(root):
     manifest = root / META
     if not manifest.is_file():
         raise OpsError("backup has no manifest")
-    meta = json.loads(manifest.read_text())
-    if meta["json_schema"] > contracts.SCHEMA_VERSION or meta["sqlite_schema"] > len(cache_mod.MIGRATIONS):
+    try:
+        meta = json.loads(manifest.read_text())
+        newer = meta["json_schema"] > contracts.SCHEMA_VERSION or meta["sqlite_schema"] > len(cache_mod.MIGRATIONS)
+        if meta.get("version") == 2 and not isinstance(meta["files"], dict):
+            raise TypeError
+    except (ValueError, KeyError, TypeError):
+        raise OpsError("backup manifest is malformed") from None
+    if newer:
         raise OpsError("backup was made by a newer HERMES; upgrade the app before restoring")
     manifest.unlink()
     found = {}
