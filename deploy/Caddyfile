@@ -5,6 +5,7 @@ hermes.example.org {
 		header_up X-Forwarded-Proto https
 	}
 	request_body {
-		max_size 1MB
+		# Must exceed the base64 form of the 10 MiB attachment limit (~13.4 MiB) in app/workspace.py.
+		max_size 15MiB
 	}
 }
