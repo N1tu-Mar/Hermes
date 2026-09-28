@@ -100,10 +100,12 @@ def test_alice_state_never_reaches_bob(remote):
         # The anonymous /auth/session probe answers 401 by design (server-owned); Chromium logs that as a console error.
         page.on(
             "console",
-            lambda m: m.type == "error"
-            and "fonts.g" not in m.text
-            and not m.location["url"].endswith("/auth/session")
-            and errors.append(m.text),
+            lambda m: (
+                m.type == "error"
+                and "fonts.g" not in m.text
+                and not m.location["url"].endswith("/auth/session")
+                and errors.append(m.text)
+            ),
         )
         page.on("pageerror", lambda e: errors.append(str(e)))
 

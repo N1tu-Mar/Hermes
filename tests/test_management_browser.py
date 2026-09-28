@@ -124,10 +124,14 @@ def test_double_submit_is_blocked(page, server):
 
 def test_contacts_search_edit_timeline_and_review(page, server):
     _, svc = server
-    svc.ledger.upsert_person({"name": "Ada Lovelace", "organization": "Analytical U", "email": "ada@example.edu"}, "manual")
+    svc.ledger.upsert_person(
+        {"name": "Ada Lovelace", "organization": "Analytical U", "email": "ada@example.edu"}, "manual"
+    )
     svc.ledger.upsert_person({"name": "Grace Hopper", "organization": "Navy", "email": "grace@example.mil"}, "manual")
     # Same email as Ada but another person's profile URL: needs a human decision.
-    svc.ledger.upsert_person({"name": "A. Lovelace", "email": "ada@example.edu", "profile_url": "https://x.example/grace"}, "manual")
+    svc.ledger.upsert_person(
+        {"name": "A. Lovelace", "email": "ada@example.edu", "profile_url": "https://x.example/grace"}, "manual"
+    )
     svc.ledger.upsert_person({"name": "Grace H", "profile_url": "https://x.example/grace"}, "manual")
     svc.ledger.upsert_person({"name": "Grace Hopper", "organization": "Navy", "email": "ada@example.edu"}, "manual")
 
