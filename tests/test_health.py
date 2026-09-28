@@ -16,9 +16,9 @@ def test_health_ready_and_diagnostics(env):
     assert bare.get("/api/diagnostics").status_code == 401  # diagnostics need auth
 
     diag = client.get("/api/diagnostics").json()
-    assert diag["mode"] == "local" and diag["workers_alive"] and diag["schema"] == {
-        "sqlite": len(MIGRATIONS), "json": 1
-    }
+    assert (
+        diag["mode"] == "local" and diag["workers_alive"] and diag["schema"] == {"sqlite": len(MIGRATIONS), "json": 1}
+    )
     text = str(diag).lower()
     for word in ("token", "key", "secret", "password", "@", "sk-"):
         assert word not in text, word

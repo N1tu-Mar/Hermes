@@ -1,4 +1,5 @@
 """Contact memory, identities, campaign management, CSV, migrations. Offline (demo mode)."""
+
 import csv
 import io
 import sqlite3
@@ -58,8 +59,14 @@ def test_migrations_upgrade_legacy_db_and_refuse_newer(tmp_path):
 # ------------------------------------------------------------------ matching rules
 def test_matching_order_and_ambiguity(tmp_path):
     led = Ledger(Cache(tmp_path / "c.sqlite3"))
-    a = led.create_contact({"name": "Dr. Jane Doe", "organization": "Rutgers", "email": "jane@r.edu",
-                            "profile_url": "http://www.r.edu/jane/"})
+    a = led.create_contact(
+        {
+            "name": "Dr. Jane Doe",
+            "organization": "Rutgers",
+            "email": "jane@r.edu",
+            "profile_url": "http://www.r.edu/jane/",
+        }
+    )
     assert canonical_url("http://www.r.edu/jane/") == canonical_url("https://r.edu/jane")
     assert name_key("Dr. Jane Doe (demo)", "Rutgers (demo)") == name_key("jane doe", "RUTGERS")
     assert led.match("J. Doe", email="JANE@r.edu") == ("match", a)  # verified email wins over name
@@ -80,8 +87,9 @@ def test_ambiguous_candidate_goes_to_review_and_inherits_dnc(tmp_path):
     with client:
         # two different people already in the ledger share Avery's name + organization
         for email in ("a1@x.example.com", "a2@x.example.com"):
-            svc.ledger.create_contact({"name": "Dr. Avery Lin (demo)", "organization": "Rutgers University (demo)",
-                                       "email": email})
+            svc.ledger.create_contact(
+                {"name": "Dr. Avery Lin (demo)", "organization": "Rutgers University (demo)", "email": email}
+            )
         dnc_id = svc.ledger.match("x", email="a2@x.example.com")[1]
         client.patch(f"/api/contacts/{dnc_id}", json={"do_not_contact": True, "dnc_reason": "asked not to be emailed"})
         cid = make_campaign(client, TEXT)
@@ -113,26 +121,46 @@ def test_acceptance_flow_persists_across_restart(tmp_path):
         # sender identities
         bad = client.post("/api/identities", json={"display_name": "X", "biography": "b", "reply_to": "nope"})
         assert bad.status_code == 400
-        me = client.post("/api/identities", json={
-            "display_name": "Nitu", "biography": BIO, "organization": "Rutgers University", "role": "Student",
-            "signature": "Nitu M.\nRutgers CS '28", "links": ["https://nitu.example.com"],
-            "default_ask": "whether you might have room for an undergraduate researcher",
-            "reply_to": "nitu@example.com"}).json()
-        club = client.post("/api/identities", json={
-            "display_name": "Rutgers Entrepreneur Society",
-            "biography": "I'm Nitu, president of the Rutgers Entrepreneur Society.",
-            "organization": "Rutgers Entrepreneur Society", "role": "President",
-            "signature": "Nitu, President, RES"}).json()
-        assert [i["display_name"] for i in client.get("/api/identities").json()] == ["Nitu", "Rutgers Entrepreneur Society"]
+        me = client.post(
+            "/api/identities",
+            json={
+                "display_name": "Nitu",
+                "biography": BIO,
+                "organization": "Rutgers University",
+                "role": "Student",
+                "signature": "Nitu M.\nRutgers CS '28",
+                "links": ["https://nitu.example.com"],
+                "default_ask": "whether you might have room for an undergraduate researcher",
+                "reply_to": "nitu@example.com",
+            },
+        ).json()
+        club = client.post(
+            "/api/identities",
+            json={
+                "display_name": "Rutgers Entrepreneur Society",
+                "biography": "I'm Nitu, president of the Rutgers Entrepreneur Society.",
+                "organization": "Rutgers Entrepreneur Society",
+                "role": "President",
+                "signature": "Nitu, President, RES",
+            },
+        ).json()
+        assert [i["display_name"] for i in client.get("/api/identities").json()] == [
+            "Nitu",
+            "Rutgers Entrepreneur Society",
+        ]
 
         # two campaigns containing the same people, each with its own identity
         parsed = client.post("/api/parse", json={"text": TEXT}).json()["intake"]
         cids = []
         for ident, name in ((me, "Neuro labs"), (club, "Neuro speakers")):
             intake = {**parsed, "sender_background": None, "sender_identity_id": str(ident["id"])}
-            cids.append(client.post("/api/campaigns", json={"intake": intake, "name": name, "budget": 40}).json()["campaign_id"])
+            cids.append(
+                client.post("/api/campaigns", json={"intake": intake, "name": name, "budget": 40}).json()["campaign_id"]
+            )
         c1, c2 = cids
-        assert client.post("/api/campaigns", json={"intake": {**parsed, "sender_identity_id": "999"}}).status_code == 404
+        assert (
+            client.post("/api/campaigns", json={"intake": {**parsed, "sender_identity_id": "999"}}).status_code == 404
+        )
         for cid in cids:
             client.post(f"/api/campaigns/{cid}/discover")
             wait(client, cid, lambda p: p["candidates"].get("discovered") and idle(p))
@@ -172,8 +200,9 @@ def test_acceptance_flow_persists_across_restart(tmp_path):
 
         # manual outcome + chronological timeline
         assert client.post(f"/api/contacts/{contact_id}/interactions", json={"kind": "draft"}).status_code == 400
-        client.post(f"/api/contacts/{contact_id}/interactions",
-                    json={"kind": "reply", "detail": "Said to follow up in May"})
+        client.post(
+            f"/api/contacts/{contact_id}/interactions", json={"kind": "reply", "detail": "Said to follow up in May"}
+        )
         tl = client.get(f"/api/contacts/{contact_id}").json()
         kinds = [e["kind"] for e in tl["timeline"]]
         assert kinds == ["draft", "approval", "gmail_draft", "reply"]
@@ -186,7 +215,9 @@ def test_acceptance_flow_persists_across_restart(tmp_path):
         client.post(f"/api/campaigns/{c2}/drafts/generate", json={"candidate_ids": [avery2["candidate_id"]]})
         wait(client, c2, lambda p: idle(p) and p["drafts"].get("needs_review"))
         d2 = client.get(f"/api/campaigns/{c2}/candidates/{avery2['candidate_id']}").json()["draft"]
-        assert "president of the Rutgers Entrepreneur Society" in d2["body"] and d2["body"].endswith("Nitu, President, RES")
+        assert "president of the Rutgers Entrepreneur Society" in d2["body"] and d2["body"].endswith(
+            "Nitu, President, RES"
+        )
 
         client.patch(f"/api/contacts/{contact_id}", json={"do_not_contact": True, "dnc_reason": "asked to stop"})
         r = client.post(f"/api/campaigns/{c2}/drafts/generate", json={"candidate_ids": [avery2["candidate_id"]]}).json()
@@ -208,7 +239,9 @@ def test_acceptance_flow_persists_across_restart(tmp_path):
         assert dview["intake"] == client.get(f"/api/campaigns/{c1}").json()["intake"]
         dp = client.get(f"/api/campaigns/{dup}/progress").json()
         assert dp["drafts"] == {} and dp["jobs"] == {} and dp["usage"]["budget"] == 40
-        assert client.patch(f"/api/campaigns/{dup}", json={"name": "Neuro labs fall"}).json()["name"] == "Neuro labs fall"
+        assert (
+            client.patch(f"/api/campaigns/{dup}", json={"name": "Neuro labs fall"}).json()["name"] == "Neuro labs fall"
+        )
         assert client.post(f"/api/campaigns/{dup}/delete", json={"confirm": dup}).status_code == 409  # not archived
         client.patch(f"/api/campaigns/{c1}", json={"archived": True})
         assert c1 not in [c["campaign_id"] for c in client.get("/api/campaigns").json()]
@@ -238,8 +271,10 @@ def test_acceptance_flow_persists_across_restart(tmp_path):
         dee = next(r for r in exported if r["name"] == "Dee Roy")
         assert dee["do_not_contact"] == "yes" and dee["tags"] == "alumni"
         # candidate import into a campaign: known person is skipped, new one linked to the CSV contact
-        cand_csv = "name,organization,email\nAda Park,Columbia University,ada@columbia.example.edu\n" \
-                   "Dr. Avery Lin (demo),Rutgers University (demo),\n"
+        cand_csv = (
+            "name,organization,email\nAda Park,Columbia University,ada@columbia.example.edu\n"
+            "Dr. Avery Lin (demo),Rutgers University (demo),\n"
+        )
         done = client.post(f"/api/campaigns/{c2}/import", json={"csv": cand_csv, "commit": True}).json()
         assert done["invalid"][0]["errors"] == ["already in this campaign"]
         ada = people_of(client, c2)["Ada Park"]
@@ -283,18 +318,26 @@ def test_existing_campaigns_backfilled_and_keep_approvals(tmp_path):
     with client:
         view = people_of(client, cid)
         assert all(c["contact_id"] for c in view.values())
-        assert client.get(f"/api/contacts/{view['Dr. Avery Lin (demo)']['contact_id']}").json()["contact"]["email"] \
+        assert (
+            client.get(f"/api/contacts/{view['Dr. Avery Lin (demo)']['contact_id']}").json()["contact"]["email"]
             == "avery.lin@demo.example.edu"
+        )
         res = client.post(f"/api/campaigns/{cid}/gmail-drafts", json={"candidate_ids": [first]}).json()["results"]
         assert res[0]["result"].startswith("gmail not connected")  # approval still valid, not "inputs changed"
 
 
 def test_mcp_tools_go_through_the_api(tmp_path, monkeypatch):
     from app import mcp_server
+
     client, svc = boot(tmp_path / "data")
     with client:
-        monkeypatch.setattr(mcp_server.httpx, "request", lambda method, url, json=None, params=None, **kw:
-                            client.request(method, url.replace(mcp_server.BASE, "/api"), json=json, params=params))
+        monkeypatch.setattr(
+            mcp_server.httpx,
+            "request",
+            lambda method, url, json=None, params=None, **kw: client.request(
+                method, url.replace(mcp_server.BASE, "/api"), json=json, params=params
+            ),
+        )
         prev = mcp_server.import_csv(MIXED_CSV)
         assert len(prev["valid"]) == 2 and mcp_server.search_contacts()["contacts"] == []
         mcp_server.import_csv(MIXED_CSV, commit=True)

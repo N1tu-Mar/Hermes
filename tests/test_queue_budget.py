@@ -148,9 +148,7 @@ def test_cancellation_during_retry_backoff_stops_attempts():
         cache = FakeCache(budget=5)
         provider = FakeResponses([ProviderError("temporary", 500)])
         api = model(cache, provider)
-        task = asyncio.create_task(
-            api.structured("campaign", "instructions", "input", "schema", {"type": "object"})
-        )
+        task = asyncio.create_task(api.structured("campaign", "instructions", "input", "schema", {"type": "object"}))
 
         await provider.called.wait()
         await asyncio.sleep(0)

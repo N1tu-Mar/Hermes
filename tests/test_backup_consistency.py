@@ -1,4 +1,5 @@
 """Backup contract: exclusive lock, streamed format, manifest + hashes, verified restore, cleanup on failure."""
+
 import errno
 import hashlib
 import io
@@ -110,8 +111,10 @@ def test_backup_under_concurrent_sqlite_writes_is_consistent(tmp_path):
         i = 0
         while not stop.is_set():
             with db:
-                db.execute("INSERT INTO jobs (job_id, campaign_id, kind, candidate_id, status) VALUES (?,?,?,?,?)",
-                           (f"w{i}", "camp", "research", f"c{i}", "done"))
+                db.execute(
+                    "INSERT INTO jobs (job_id, campaign_id, kind, candidate_id, status) VALUES (?,?,?,?,?)",
+                    (f"w{i}", "camp", "research", f"c{i}", "done"),
+                )
             i += 1
             written.append(i)
         db.close()
@@ -259,8 +262,14 @@ def test_authentic_but_wrong_contents_rejected_before_swap(tmp_path):
     bad_hash = {"version": 2, "json_schema": 1, "sqlite_schema": 1, "files": {"a.txt": {"size": 5, "sha256": "0" * 64}}}
     cases = [
         (craft(tmp_path / "1", good, meta=bad_hash), "hash check"),
-        (craft(tmp_path / "2", {**good, "extra.txt": b"x"}, meta={**bad_hash, "files": {
-            "a.txt": {"size": 5, "sha256": hashlib.sha256(b"hello").hexdigest()}}}), "manifest"),
+        (
+            craft(
+                tmp_path / "2",
+                {**good, "extra.txt": b"x"},
+                meta={**bad_hash, "files": {"a.txt": {"size": 5, "sha256": hashlib.sha256(b"hello").hexdigest()}}},
+            ),
+            "manifest",
+        ),
         (craft(tmp_path / "3", good, meta={"version": 2, "json_schema": 99, "sqlite_schema": 1, "files": {}}), "newer"),
         (craft(tmp_path / "4", good, meta={"version": 2, "json_schema": 1, "sqlite_schema": 99, "files": {}}), "newer"),
         (craft(tmp_path / "5", {"cache.sqlite3": b"not a database" * 100}), "integrity"),

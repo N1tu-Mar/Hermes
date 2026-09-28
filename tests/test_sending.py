@@ -3,6 +3,7 @@
 Offline and deterministic: a fake Gmail client (same call shape as googleapiclient)
 and an injected clock. Scheduler ticks are driven by hand (send_every=None).
 """
+
 import base64
 import email
 import sqlite3
@@ -68,13 +69,18 @@ class FakeGmail:
             did = f"r{self.n}"
             self.drafts_[did] = email.message_from_bytes(base64.urlsafe_b64decode(body["message"]["raw"]))
             return {"id": did}
+
         return _Exec(run)
 
     def get(self, userId, id, format):
         def run():
             if id not in self.drafts_:
                 raise HttpError(httplib2.Response({"status": "404"}), b"not found")
-            return {"id": id, "message": {"payload": {"headers": [{"name": k, "value": v} for k, v in self.drafts_[id].items()]}}}
+            return {
+                "id": id,
+                "message": {"payload": {"headers": [{"name": k, "value": v} for k, v in self.drafts_[id].items()]}},
+            }
+
         return _Exec(run)
 
     def list(self, userId, maxResults):
@@ -96,6 +102,7 @@ class FakeGmail:
             if mode == "crash_after":
                 raise Crash()
             return {"id": f"m{len(self.sent)}", "threadId": f"t{len(self.sent)}", "labelIds": ["SENT"]}
+
         return _Exec(run)
 
 
@@ -110,24 +117,57 @@ class _Exec:
 def make_service(root, fake, clock, can_send=True):
     store = CampaignStore(root / "data")
     cache = Cache(root / "data" / "cache.sqlite3")
-    return CampaignService(store, cache, demo.DemoModel(cache), demo.demo_fetcher(cache),
-                           GmailDrafts(fake, can_send=can_send) if fake else None, clock=clock, send_every=None)
+    return CampaignService(
+        store,
+        cache,
+        demo.DemoModel(cache),
+        demo.demo_fetcher(cache),
+        GmailDrafts(fake, can_send=can_send) if fake else None,
+        clock=clock,
+        send_every=None,
+    )
 
 
 def add_person(svc, cid, n, email_addr="avery.lin@demo.example.edu", verified=True):
     """A researched candidate with an approved draft whose inputs are current."""
     cand = f"c_{n:03d}"
-    svc.store.update_candidates(cid, lambda d: d["candidates"].append(
-        {"candidate_id": cand, "name": f"Avery Lin{n}", "organization": "Rutgers", "role": "Professor",
-         "profile_url": f"https://demo.example.edu/{n}", "discovery_source_url": None, "status": "researched"}))
-    profile = {"candidate_id": cand, "name": f"Avery Lin{n}", "status": "researched", "contact_email": email_addr,
-               "email_verified_on_page": verified, "fit_reason": "Studies infant attention.",
-               "evidence": [{"claim": "Studies infant attention.", "source_url": f"https://demo.example.edu/{n}"}]}
+    svc.store.update_candidates(
+        cid,
+        lambda d: d["candidates"].append(
+            {
+                "candidate_id": cand,
+                "name": f"Avery Lin{n}",
+                "organization": "Rutgers",
+                "role": "Professor",
+                "profile_url": f"https://demo.example.edu/{n}",
+                "discovery_source_url": None,
+                "status": "researched",
+            }
+        ),
+    )
+    profile = {
+        "candidate_id": cand,
+        "name": f"Avery Lin{n}",
+        "status": "researched",
+        "contact_email": email_addr,
+        "email_verified_on_page": verified,
+        "fit_reason": "Studies infant attention.",
+        "evidence": [{"claim": "Studies infant attention.", "source_url": f"https://demo.example.edu/{n}"}],
+    }
     svc.store.update_research(cid, lambda d: d["profiles"].__setitem__(cand, profile))
     outline, _ = svc._outline(cid, cand, False)
-    svc.cache.upsert_draft(cid, cand, outline["template_version"], input_hash=writer.input_hash(outline),
-                           subject=f"Question about your lab {n}", body="Hello, I read about your work.",
-                           evidence_ids=["e0"], outline=outline, issues=[], status="approved")
+    svc.cache.upsert_draft(
+        cid,
+        cand,
+        outline["template_version"],
+        input_hash=writer.input_hash(outline),
+        subject=f"Question about your lab {n}",
+        body="Hello, I read about your work.",
+        evidence_ids=["e0"],
+        outline=outline,
+        issues=[],
+        status="approved",
+    )
     return cand
 
 
@@ -172,10 +212,12 @@ def test_default_configuration_cannot_send(world):
     with pytest.raises(Blocked):
         svc.confirm_send(cid, cand, prev["approval_hash"])
     # even a row forced into the queue past every approval check does not go out
-    svc.cache.x("""INSERT INTO sends (send_id, idempotency_key, campaign_id, candidate_id, template_version, sender, recipient,
+    svc.cache.x(
+        """INSERT INTO sends (send_id, idempotency_key, campaign_id, candidate_id, template_version, sender, recipient,
                    subject, body, attachments, scheduled_at, approval, approval_hash, approved_at, status)
                    VALUES ('snd_forced','k',?,?,'x',?,?,'s','b','[]',?,'{}','h',?,'scheduled')""",
-                (cid, cand, SENDER, "avery.lin@demo.example.edu", clock.t - 10, clock.t - 10))
+        (cid, cand, SENDER, "avery.lin@demo.example.edu", clock.t - 10, clock.t - 10),
+    )
     for _ in range(3):
         clock.t += 600
         assert svc.outbox.tick() is None
@@ -431,8 +473,10 @@ def test_long_overdue_message_needs_new_approval(world):
 
 
 # ------------------------------------------------------------------ recipients and approval integrity
-@pytest.mark.parametrize("addr,verified,why", [
-    (None, False, "missing"), ("not-an-address", True, "malformed"), ("x@demo.example.edu", False, "not verified")])
+@pytest.mark.parametrize(
+    "addr,verified,why",
+    [(None, False, "missing"), ("not-an-address", True, "malformed"), ("x@demo.example.edu", False, "not verified")],
+)
 def test_bad_recipients_are_refused(world, addr, verified, why):
     svc, fake, clock, cid, _ = world
     cand = add_person(svc, cid, 1, addr, verified)
@@ -512,15 +556,23 @@ def test_http_flow(tmp_path):
         assert client.patch("/api/sending/settings", json={"bogus": 1}).status_code == 400
         client.patch(f"/api/campaigns/{cid}/sending", json={"enabled": True})
         assert client.get(f"/api/campaigns/{cid}").json()["sending_enabled"] is True
-        prev = client.post(f"/api/campaigns/{cid}/sends/preview", json={"candidate_id": cand, "scheduled_at": "2026-09-28T16:00"}).json()
+        prev = client.post(
+            f"/api/campaigns/{cid}/sends/preview", json={"candidate_id": cand, "scheduled_at": "2026-09-28T16:00"}
+        ).json()
         assert prev["blockers"] == [] and prev["scheduled_local"].startswith("2026-09-28 16:00")
-        r = client.post(f"/api/campaigns/{cid}/sends", json={**body, "approval_hash": prev["approval_hash"],
-                                                             "scheduled_at": "2026-09-28T16:00"}).json()
+        r = client.post(
+            f"/api/campaigns/{cid}/sends",
+            json={**body, "approval_hash": prev["approval_hash"], "scheduled_at": "2026-09-28T16:00"},
+        ).json()
         assert client.get(f"/api/campaigns/{cid}/sends").json()[0]["send_id"] == r["send_id"]
         assert client.get(f"/api/campaigns/{cid}").json()["candidates"][0]["send_status"] == "scheduled"
         assert client.post(f"/api/sends/{r['send_id']}/cancel").json()["status"] == "cancelled"
         assert client.post(f"/api/sends/{r['send_id']}/cancel").status_code == 409
-        assert [a["event"] for a in client.get(f"/api/sends/{r['send_id']}").json()["audit"]] == ["approved", "scheduled", "cancelled"]
+        assert [a["event"] for a in client.get(f"/api/sends/{r['send_id']}").json()["audit"]] == [
+            "approved",
+            "scheduled",
+            "cancelled",
+        ]
         assert client.post("/api/sending/pause").json()["paused"] is True
         assert client.post("/api/sending/unpause").json()["paused"] is False
         client.post("/api/suppressions", json={"email": "z@x.org", "reason": "do_not_contact"})
@@ -532,6 +584,7 @@ def test_http_flow(tmp_path):
 
 def test_mcp_exposes_only_safe_sending_tools():
     from app import mcp_server
+
     for name in ("sending_status", "preview_send", "list_sends", "cancel_send", "pause_sending", "emergency_stop"):
         assert callable(getattr(mcp_server, name))
     for name in ("confirm_send", "send_now", "enable_sending", "unpause_sending", "approve_draft"):

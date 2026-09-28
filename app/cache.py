@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .migrations import migrate_sqlite
+
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS pages (
   url TEXT PRIMARY KEY, fetched_at REAL, ok INTEGER, text TEXT, error TEXT);
@@ -146,6 +147,7 @@ CREATE TABLE IF NOT EXISTS campaign_meta (
   campaign_id TEXT PRIMARY KEY, name TEXT, archived INTEGER NOT NULL DEFAULT 0, updated_at REAL);
 """
 
+
 def _migrate_v3(db):
     """Make people/person_links canonical.
 
@@ -186,26 +188,73 @@ def _migrate_v3(db):
         email, url, nk = norm_email(c["email"]), canonical_url(c["profile_url"]), name_key(c["name"], c["organization"])
         target, ambiguous = find_target(email, url, nk)
         if target is None:
-            cols = ("name", "organization", "role", "email", "profile_url", "name_key", "notes", "tags",
-                    "relationship", "do_not_contact", "dnc_reason", "last_contacted_at", "owner", "source",
-                    "created_at", "updated_at")
-            values = (c["name"], c["organization"], c["role"], email, url, nk, c["notes"] or "",
-                      c["tags"] or "[]", c["relationship"] or "new", c["do_not_contact"] or 0, c["dnc_reason"],
-                      c["last_contacted_at"], c["owner"], c["source"], c["created_at"] or now, now)
-            target = db.execute(f"INSERT INTO people ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
-                                values).lastrowid
+            cols = (
+                "name",
+                "organization",
+                "role",
+                "email",
+                "profile_url",
+                "name_key",
+                "notes",
+                "tags",
+                "relationship",
+                "do_not_contact",
+                "dnc_reason",
+                "last_contacted_at",
+                "owner",
+                "source",
+                "created_at",
+                "updated_at",
+            )
+            values = (
+                c["name"],
+                c["organization"],
+                c["role"],
+                email,
+                url,
+                nk,
+                c["notes"] or "",
+                c["tags"] or "[]",
+                c["relationship"] or "new",
+                c["do_not_contact"] or 0,
+                c["dnc_reason"],
+                c["last_contacted_at"],
+                c["owner"],
+                c["source"],
+                c["created_at"] or now,
+                now,
+            )
+            target = db.execute(
+                f"INSERT INTO people ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", values
+            ).lastrowid
             if ambiguous:
-                person = {"name": c["name"], "organization": c["organization"], "role": c["role"],
-                          "email": email, "profile_url": url}
-                db.execute("INSERT INTO person_reviews (campaign_id, candidate_id, person, options, reason, "
-                          "created_at) VALUES (NULL, NULL, ?, ?, ?, ?)",
-                          (json.dumps(person, sort_keys=True), json.dumps(sorted({*ambiguous, target})),
-                           "legacy contact migration found more than one possible match", now))
+                person = {
+                    "name": c["name"],
+                    "organization": c["organization"],
+                    "role": c["role"],
+                    "email": email,
+                    "profile_url": url,
+                }
+                db.execute(
+                    "INSERT INTO person_reviews (campaign_id, candidate_id, person, options, reason, "
+                    "created_at) VALUES (NULL, NULL, ?, ?, ?, ?)",
+                    (
+                        json.dumps(person, sort_keys=True),
+                        json.dumps(sorted({*ambiguous, target})),
+                        "legacy contact migration found more than one possible match",
+                        now,
+                    ),
+                )
         else:
             row = dict(db.execute("SELECT * FROM people WHERE id=?", (target,)).fetchone())
             patch = {}
-            for field, value in (("email", email), ("profile_url", url), ("role", c["role"]),
-                                 ("owner", c["owner"]), ("source", c["source"])):
+            for field, value in (
+                ("email", email),
+                ("profile_url", url),
+                ("role", c["role"]),
+                ("owner", c["owner"]),
+                ("source", c["source"]),
+            ):
                 if value and not row[field]:
                     patch[field] = value
             if c["notes"] and c["notes"] not in (row["notes"] or ""):
@@ -224,8 +273,9 @@ def _migrate_v3(db):
                 patch["relationship"] = c["relationship"]
             if patch:
                 patch["updated_at"] = now
-                db.execute(f"UPDATE people SET {', '.join(k + '=?' for k in patch)} WHERE id=?",
-                          (*patch.values(), target))
+                db.execute(
+                    f"UPDATE people SET {', '.join(k + '=?' for k in patch)} WHERE id=?", (*patch.values(), target)
+                )
         remap[c["id"]] = target
 
     # A contact_id already equal to a valid people.id is not proof it was written against people:
@@ -235,8 +285,10 @@ def _migrate_v3(db):
     # that campaign/candidate; a global row (no campaign/candidate) can only exist via the contacts API,
     # which requires an id already valid in people, so a colliding id there is always already correct.
     people_ids = {r["id"] for r in db.execute("SELECT id FROM people")}
-    canonical_link = {(r["campaign_id"], r["candidate_id"]): r["contact_id"]
-                       for r in db.execute("SELECT campaign_id, candidate_id, contact_id FROM person_links")}
+    canonical_link = {
+        (r["campaign_id"], r["candidate_id"]): r["contact_id"]
+        for r in db.execute("SELECT campaign_id, candidate_id, contact_id FROM person_links")
+    }
     for row in [dict(r) for r in db.execute("SELECT * FROM interactions")]:
         old_cid = row["contact_id"]
         if old_cid not in remap:
@@ -262,8 +314,10 @@ def _migrate_v3(db):
     for row in [dict(r) for r in db.execute("SELECT * FROM contact_links")]:
         new_id = remap.get(row["contact_id"])
         if new_id is not None:
-            db.execute("INSERT OR IGNORE INTO person_links VALUES (?,?,?,?)",
-                      (row["campaign_id"], row["candidate_id"], new_id, row["linked_at"]))
+            db.execute(
+                "INSERT OR IGNORE INTO person_links VALUES (?,?,?,?)",
+                (row["campaign_id"], row["candidate_id"], new_id, row["linked_at"]),
+            )
     db.execute("DELETE FROM contact_links")
     db.execute("DELETE FROM contacts")
 
@@ -274,8 +328,12 @@ def _migrate_v3(db):
         if name not in usage_cols:
             db.execute(f"ALTER TABLE usage ADD COLUMN {name} INTEGER DEFAULT 0")
     draft_cols = {r[1] for r in db.execute("PRAGMA table_info(drafts)")}
-    for name, kind in (("attachment_ids", "TEXT"), ("content_ids", "TEXT"),
-                       ("template_id", "TEXT"), ("template_number", "INTEGER")):
+    for name, kind in (
+        ("attachment_ids", "TEXT"),
+        ("content_ids", "TEXT"),
+        ("template_id", "TEXT"),
+        ("template_number", "INTEGER"),
+    ):
         if name not in draft_cols:
             db.execute(f"ALTER TABLE drafts ADD COLUMN {name} {kind}")
     if "started_at" not in {r[1] for r in db.execute("PRAGMA table_info(jobs)")}:
@@ -349,11 +407,16 @@ class Cache:
     def upsert(self, table, keys, **fields):
         """Insert the key row if missing, then set fields. Table/column names are code constants, never input."""
         with self.lock:
-            self.db.execute(f"INSERT OR IGNORE INTO {table} ({', '.join(keys)}) VALUES ({', '.join('?' * len(keys))})",
-                            tuple(keys.values()))
+            self.db.execute(
+                f"INSERT OR IGNORE INTO {table} ({', '.join(keys)}) VALUES ({', '.join('?' * len(keys))})",
+                tuple(keys.values()),
+            )
             if fields:
-                self.db.execute(f"UPDATE {table} SET {', '.join(f'{k}=?' for k in fields)} WHERE "
-                                + " AND ".join(f"{k}=?" for k in keys), (*fields.values(), *keys.values()))
+                self.db.execute(
+                    f"UPDATE {table} SET {', '.join(f'{k}=?' for k in fields)} WHERE "
+                    + " AND ".join(f"{k}=?" for k in keys),
+                    (*fields.values(), *keys.values()),
+                )
 
     # pages -------------------------------------------------------------
     def get_page(self, url):
@@ -412,11 +475,13 @@ class Cache:
     # jobs --------------------------------------------------------------
     def put_job(self, job_id, campaign_id, kind, candidate_id, status, error=None):
         now = time.time()
-        self.x("""INSERT INTO jobs (job_id, campaign_id, kind, candidate_id, status, error, created_at, updated_at)
+        self.x(
+            """INSERT INTO jobs (job_id, campaign_id, kind, candidate_id, status, error, created_at, updated_at)
                   VALUES (?,?,?,?,?,?,?,?)
                   ON CONFLICT(job_id) DO UPDATE SET status=excluded.status, error=excluded.error, updated_at=excluded.updated_at,
                   started_at=CASE WHEN excluded.status='running' THEN excluded.updated_at ELSE started_at END""",
-               (job_id, campaign_id, kind, candidate_id, status, error, now, now))
+            (job_id, campaign_id, kind, candidate_id, status, error, now, now),
+        )
 
     def jobs(self, campaign_id=None, status=None):
         sql, args = "SELECT * FROM jobs WHERE 1=1", []
@@ -443,8 +508,10 @@ class Cache:
         self.x(f"UPDATE usage SET {sets} WHERE campaign_id=?", (*inc.values(), campaign_id))
         logged = {k: v for k, v in inc.items() if k in USAGE_LOGGED}
         if logged:  # timestamped copy so analytics can filter usage by date
-            self.x(f"INSERT INTO usage_log (campaign_id, at, {', '.join(logged)}) VALUES (?,?{',?' * len(logged)})",
-                   (campaign_id, time.time(), *logged.values()))
+            self.x(
+                f"INSERT INTO usage_log (campaign_id, at, {', '.join(logged)}) VALUES (?,?{',?' * len(logged)})",
+                (campaign_id, time.time(), *logged.values()),
+            )
 
     def set_budget(self, campaign_id, budget):
         self.usage(campaign_id)
@@ -453,9 +520,10 @@ class Cache:
     # deletion / retention ----------------------------------------------
     def delete_campaign(self, campaign_id):
         with self.tx():
-            execution_ids = [r[0] for r in self.db.execute(
-                "SELECT execution_id FROM rule_executions WHERE campaign_id=?", (campaign_id,)
-            )]
+            execution_ids = [
+                r[0]
+                for r in self.db.execute("SELECT execution_id FROM rule_executions WHERE campaign_id=?", (campaign_id,))
+            ]
             for execution_id in execution_ids:
                 self.db.execute("DELETE FROM rule_actions WHERE execution_id=?", (execution_id,))
             send_ids = [r[0] for r in self.db.execute("SELECT send_id FROM sends WHERE campaign_id=?", (campaign_id,))]
@@ -465,19 +533,40 @@ class Cache:
                 self.db.execute("DELETE FROM send_audit WHERE send_id=?", (send_id,))
             self.db.execute("""CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON send_audit
                                BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END""")
-            for table in ("drafts", "jobs", "usage", "events", "corrections", "person_links", "contact_links",
-                          "person_reviews", "milestones", "usage_log", "notifications", "outreach_contacts",
-                          "followups", "gmail_seen", "contact_log", "campaign_assets",
-                          "rule_executions", "campaign_rules", "campaign_meta", "sends"):
+            for table in (
+                "drafts",
+                "jobs",
+                "usage",
+                "events",
+                "corrections",
+                "person_links",
+                "contact_links",
+                "person_reviews",
+                "milestones",
+                "usage_log",
+                "notifications",
+                "outreach_contacts",
+                "followups",
+                "gmail_seen",
+                "contact_log",
+                "campaign_assets",
+                "rule_executions",
+                "campaign_rules",
+                "campaign_meta",
+                "sends",
+            ):
                 self.db.execute(f"DELETE FROM {table} WHERE campaign_id=?", (campaign_id,))  # noqa: S608 fixed names
             self.db.execute("DELETE FROM research_cache WHERE key LIKE ?", (campaign_id + ":%",))
 
     def delete_candidate(self, campaign_id, candidate_id, name=None, urls=()):
         """Remove every row derived from one person. Events are free text, so match their id or name."""
         with self.tx():
-            send_ids = [r[0] for r in self.db.execute(
-                "SELECT send_id FROM sends WHERE campaign_id=? AND candidate_id=?", (campaign_id, candidate_id)
-            )]
+            send_ids = [
+                r[0]
+                for r in self.db.execute(
+                    "SELECT send_id FROM sends WHERE campaign_id=? AND candidate_id=?", (campaign_id, candidate_id)
+                )
+            ]
             self.db.execute("DROP TRIGGER IF EXISTS audit_no_delete")
             for send_id in send_ids:
                 self.db.execute("DELETE FROM send_audit WHERE send_id=?", (send_id,))
@@ -488,8 +577,19 @@ class Cache:
                     f"DELETE FROM {table} WHERE campaign_id=? AND candidate_id LIKE ?",  # noqa: S608
                     (campaign_id, candidate_id + "%"),
                 )
-            for table in ("corrections", "person_links", "contact_links", "person_reviews", "milestones",
-                          "notifications", "outreach_contacts", "followups", "gmail_seen", "contact_log", "sends"):
+            for table in (
+                "corrections",
+                "person_links",
+                "contact_links",
+                "person_reviews",
+                "milestones",
+                "notifications",
+                "outreach_contacts",
+                "followups",
+                "gmail_seen",
+                "contact_log",
+                "sends",
+            ):
                 self.db.execute(
                     f"DELETE FROM {table} WHERE campaign_id=? AND candidate_id=?",  # noqa: S608 fixed names
                     (campaign_id, candidate_id),
@@ -499,7 +599,8 @@ class Cache:
             )
             self.db.execute(
                 "DELETE FROM rule_actions WHERE candidate_id=? AND execution_id IN "
-                "(SELECT execution_id FROM rule_executions WHERE campaign_id=?)", (candidate_id, campaign_id)
+                "(SELECT execution_id FROM rule_executions WHERE campaign_id=?)",
+                (candidate_id, campaign_id),
             )
             self.db.execute("DELETE FROM research_cache WHERE key LIKE ?", (f"{campaign_id}:{candidate_id}:%",))
             self.db.execute(
@@ -536,14 +637,26 @@ class Cache:
         )
 
     # corrections ------------------------------------------------------
-    def record_correction(self, subject_key, aliases, campaign_id, candidate_id, field,
-                          original_value, corrected_value):
+    def record_correction(
+        self, subject_key, aliases, campaign_id, candidate_id, field, original_value, corrected_value
+    ):
         with self.lock:
-            cur = self.db.execute("""INSERT INTO corrections
+            cur = self.db.execute(
+                """INSERT INTO corrections
                 (subject_key,aliases,campaign_id,candidate_id,field,original_value,corrected_value,provenance,created_at)
                 VALUES (?,?,?,?,?,?,?,?,?)""",
-                (subject_key, json.dumps(sorted(set(aliases))), campaign_id, candidate_id, field,
-                 json.dumps(original_value), json.dumps(corrected_value), "manual_correction", time.time()))
+                (
+                    subject_key,
+                    json.dumps(sorted(set(aliases))),
+                    campaign_id,
+                    candidate_id,
+                    field,
+                    json.dumps(original_value),
+                    json.dumps(corrected_value),
+                    "manual_correction",
+                    time.time(),
+                ),
+            )
             correction_id = cur.lastrowid
         return self.q("SELECT * FROM corrections WHERE id=?", (correction_id,))[0]
 
@@ -557,8 +670,7 @@ class Cache:
 
     def corrections_for(self, aliases):
         aliases = set(aliases)
-        return [r for r in self.corrections()
-                if r["subject_key"] in aliases or aliases.intersection(r["aliases"])]
+        return [r for r in self.corrections() if r["subject_key"] in aliases or aliases.intersection(r["aliases"])]
 
 
 def _draft(r):

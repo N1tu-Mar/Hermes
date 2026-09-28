@@ -1,5 +1,6 @@
 """Data directories are 0700 and data files 0600, even under a permissive umask (owned files:
 app/storage.py, app/cache.py, app/workspace.py, app/migrations.py)."""
+
 import base64
 import os
 import stat
@@ -72,8 +73,14 @@ def test_workspace_secures_attachment_directory_and_files(tmp_path):
     ws = Workspace(cache, root)
     assert _mode(ws.attachment_root) == DIR_MODE
 
-    att = ws.add_attachment({"filename": "deck.pdf", "media_type": "application/pdf", "kind": "club_deck",
-                             "content_base64": base64.b64encode(b"%PDF-1.4\nx\n%%EOF").decode()})
+    att = ws.add_attachment(
+        {
+            "filename": "deck.pdf",
+            "media_type": "application/pdf",
+            "kind": "club_deck",
+            "content_base64": base64.b64encode(b"%PDF-1.4\nx\n%%EOF").decode(),
+        }
+    )
     path = ws.attachment_root / att["stored_name"]
     assert _mode(path) == FILE_MODE
 

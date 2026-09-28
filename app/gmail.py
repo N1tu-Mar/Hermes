@@ -55,8 +55,9 @@ def rfc_message_id(key):
     return f"<m-hermes-{token}@outreach.local>"
 
 
-def build_message(to, subject, body, key, reply_to=None, attachments=None,
-                  thread_id=None, in_reply_to=None, message_id=None):
+def build_message(
+    to, subject, body, key, reply_to=None, attachments=None, thread_id=None, in_reply_to=None, message_id=None
+):
     msg = EmailMessage()
     if to:
         msg["To"] = to
@@ -95,8 +96,12 @@ def _run(request):
 
 def _ids(res, message_id=None):
     msg = res.get("message") or {}
-    return {"draft_id": res["id"], "message_id": msg.get("id"), "thread_id": msg.get("threadId"),
-            "rfc_message_id": message_id}
+    return {
+        "draft_id": res["id"],
+        "message_id": msg.get("id"),
+        "thread_id": msg.get("threadId"),
+        "rfc_message_id": message_id,
+    }
 
 
 class GmailDrafts:
@@ -123,21 +128,28 @@ class GmailDrafts:
                 creds.refresh(Request())
             except RefreshError:
                 if not interactive:
-                    raise GmailAuthError(REAUTH)
+                    raise GmailAuthError(REAUTH) from None
                 creds = None
-        wants_upgrade = creds and interactive and (
-            not creds.has_scopes(SCOPES) or (want_send and not creds.has_scopes([SEND_SCOPE])))
+        wants_upgrade = (
+            creds
+            and interactive
+            and (not creds.has_scopes(SCOPES) or (want_send and not creds.has_scopes([SEND_SCOPE])))
+        )
         if not (creds and creds.valid and creds.has_scopes([COMPOSE])) or wants_upgrade:
             if not (interactive and cred_path.exists()):
                 return None
             from google_auth_oauthlib.flow import InstalledAppFlow
+
             scopes = SCOPES + ([SEND_SCOPE] if want_send else [])
             creds = InstalledAppFlow.from_client_secrets_file(str(cred_path), scopes).run_local_server(port=0)
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json())
         os.chmod(token_path, 0o600)
-        return cls(build("gmail", "v1", credentials=creds, cache_discovery=False),
-                   can_sync=creds.has_scopes([METADATA]), can_send=creds.has_scopes([SEND_SCOPE]))
+        return cls(
+            build("gmail", "v1", credentials=creds, cache_discovery=False),
+            can_sync=creds.has_scopes([METADATA]),
+            can_send=creds.has_scopes([SEND_SCOPE]),
+        )
 
     @classmethod
     def from_token_json(cls, text):
@@ -149,11 +161,13 @@ class GmailDrafts:
         creds = Credentials.from_authorized_user_info(json.loads(text), SCOPES)
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
-        return cls(build("gmail", "v1", credentials=creds, cache_discovery=False),
-                   can_sync=creds.has_scopes([METADATA]), can_send=creds.has_scopes([SEND_SCOPE]))
+        return cls(
+            build("gmail", "v1", credentials=creds, cache_discovery=False),
+            can_sync=creds.has_scopes([METADATA]),
+            can_send=creds.has_scopes([SEND_SCOPE]),
+        )
 
-    def create(self, to, subject, body, key, reply_to=None, attachments=None,
-               thread_id=None, in_reply_to=None):
+    def create(self, to, subject, body, key, reply_to=None, attachments=None, thread_id=None, in_reply_to=None):
         """Returns {draft_id, message_id, thread_id}."""
         message_id = rfc_message_id(key)
         payload = build_message(to, subject, body, key, reply_to, attachments, thread_id, in_reply_to, message_id)
@@ -188,8 +202,13 @@ class GmailDrafts:
             full = _run(self.svc.users().drafts().get(userId="me", id=d["id"], format="metadata"))
             headers = full.get("message", {}).get("payload", {}).get("headers", [])
             if any(h.get("name") == "X-Outreach-Key" and h.get("value") == key for h in headers):
-                return _ids(full, next((h.get("value") for h in headers if h.get("name", "").lower() == "message-id"),
-                                       rfc_message_id(key)))
+                return _ids(
+                    full,
+                    next(
+                        (h.get("value") for h in headers if h.get("name", "").lower() == "message-id"),
+                        rfc_message_id(key),
+                    ),
+                )
         return None
 
     def message(self, message_id):
@@ -197,11 +216,15 @@ class GmailDrafts:
         messages = getattr(self.svc.users(), "messages", None)
         if not messages:
             raise NotImplementedError("Gmail message metadata is unavailable")
-        res = _run(messages().get(userId="me", id=message_id, format="metadata",
-                                  metadataHeaders=THREAD_HEADERS))
+        res = _run(messages().get(userId="me", id=message_id, format="metadata", metadataHeaders=THREAD_HEADERS))
         headers = {h["name"].lower(): h["value"] for h in (res.get("payload") or {}).get("headers", [])}
-        return {"id": res["id"], "thread_id": res.get("threadId"), "labels": res.get("labelIds") or [],
-                "at": int(res.get("internalDate") or 0) / 1000, "headers": headers}
+        return {
+            "id": res["id"],
+            "thread_id": res.get("threadId"),
+            "labels": res.get("labelIds") or [],
+            "at": int(res.get("internalDate") or 0) / 1000,
+            "headers": headers,
+        }
 
     def delivery_state(self, draft_id, message_id=None, thread_id=None, key=None):
         """Classify a known draft as present, sent, or deleted using persisted provider IDs.
@@ -222,8 +245,13 @@ class GmailDrafts:
                 msg = self.message(message_id)
                 checked = True
                 if "SENT" in msg["labels"]:
-                    return {"state": "sent", "message_id": msg["id"], "thread_id": msg["thread_id"],
-                            "rfc_message_id": msg["headers"].get("message-id"), "delivered_at": msg["at"]}
+                    return {
+                        "state": "sent",
+                        "message_id": msg["id"],
+                        "thread_id": msg["thread_id"],
+                        "rfc_message_id": msg["headers"].get("message-id"),
+                        "delivered_at": msg["at"],
+                    }
             except KeyError:
                 checked = True
             except NotImplementedError:
@@ -238,23 +266,39 @@ class GmailDrafts:
             expected_rfc = rfc_message_id(key) if key else None
             for msg in messages:
                 headers = msg["headers"]
-                matches = (message_id and msg["id"] == message_id) or (key and headers.get("x-outreach-key") == key) \
+                matches = (
+                    (message_id and msg["id"] == message_id)
+                    or (key and headers.get("x-outreach-key") == key)
                     or (expected_rfc and headers.get("message-id") == expected_rfc)
+                )
                 if matches and "SENT" in msg["labels"]:
-                    return {"state": "sent", "message_id": msg["id"], "thread_id": thread_id,
-                            "rfc_message_id": headers.get("message-id") or expected_rfc,
-                            "delivered_at": msg["at"]}
+                    return {
+                        "state": "sent",
+                        "message_id": msg["id"],
+                        "thread_id": thread_id,
+                        "rfc_message_id": headers.get("message-id") or expected_rfc,
+                        "delivered_at": msg["at"],
+                    }
         return {"state": "deleted" if checked else "unknown_missing"}
 
     def thread(self, thread_id):
         """Compact metadata for one HERMES thread: id, labels, time, a few headers. No bodies."""
         if not self.can_sync:
-            raise GmailAuthError("Reply tracking needs the gmail.metadata scope. Run `python -m app.gmail` to grant it.")
-        res = _run(self.svc.users().threads().get(userId="me", id=thread_id, format="metadata",
-                                                  metadataHeaders=THREAD_HEADERS))
-        return [{"id": m["id"], "labels": m.get("labelIds") or [], "at": int(m.get("internalDate") or 0) / 1000,
-                 "headers": {h["name"].lower(): h["value"] for h in (m.get("payload") or {}).get("headers", [])}}
-                for m in res.get("messages", [])]
+            raise GmailAuthError(
+                "Reply tracking needs the gmail.metadata scope. Run `python -m app.gmail` to grant it."
+            )
+        res = _run(
+            self.svc.users().threads().get(userId="me", id=thread_id, format="metadata", metadataHeaders=THREAD_HEADERS)
+        )
+        return [
+            {
+                "id": m["id"],
+                "labels": m.get("labelIds") or [],
+                "at": int(m.get("internalDate") or 0) / 1000,
+                "headers": {h["name"].lower(): h["value"] for h in (m.get("payload") or {}).get("headers", [])},
+            }
+            for m in res.get("messages", [])
+        ]
 
 
 def web_flow(redirect_uri):
@@ -267,12 +311,16 @@ def web_flow(redirect_uri):
 if __name__ == "__main__":
     # One-time desktop OAuth; add --enable-sending to also grant gmail.send.
     import sys
+
     try:
         g = GmailDrafts.connect(interactive=True, want_send="--enable-sending" in sys.argv)
     except GmailAuthError as e:
         g = None
         print(e)
-    print(("Gmail connected (drafts + reply tracking"
-           + (" + sending" if g.can_send else "") + ").") if g and g.can_sync
-          else f"Put your OAuth client JSON at {credentials_paths()[0]} first." if not g
-          else "Gmail connected for drafts only; reply tracking scope was not granted.")
+    print(
+        ("Gmail connected (drafts + reply tracking" + (" + sending" if g.can_send else "") + ").")
+        if g and g.can_sync
+        else f"Put your OAuth client JSON at {credentials_paths()[0]} first."
+        if not g
+        else "Gmail connected for drafts only; reply tracking scope was not granted."
+    )

@@ -86,17 +86,34 @@ PROFILE_SCHEMA = {
         "summary": _s(),
         "research_interests": {"type": "array", "items": _s()},
         "fit_reason": _s(),
-        "evidence": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False, "required": ["claim", "source_url", "source_locator"],
-            "properties": {"claim": _s(), "source_url": _s(), "source_locator": _ns()}}},
+        "evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["claim", "source_url", "source_locator"],
+                "properties": {"claim": _s(), "source_url": _s(), "source_locator": _ns()},
+            },
+        },
     },
 }
 
 
 def brief(intake):
     """Compact intake text; never the whole chat history."""
-    keys = ("mode", "subtype", "organizations", "locations", "research_areas", "industries",
-            "work_style", "other_criteria", "outreach_goal", "event_details", "source_urls")
+    keys = (
+        "mode",
+        "subtype",
+        "organizations",
+        "locations",
+        "research_areas",
+        "industries",
+        "work_style",
+        "other_criteria",
+        "outreach_goal",
+        "event_details",
+        "source_urls",
+    )
     return json.dumps({k: intake.get(k) for k in keys if intake.get(k)}, ensure_ascii=False)
 
 
@@ -133,7 +150,10 @@ def html_to_text(html):
     p = _Text()
     p.feed(html)
     seen, lines = set(), []
-    injection = re.compile(r"\b(ignore (?:all |any )?(?:previous|prior|above) instructions?|system message|developer message|assistant:|prompt injection|follow these instructions)\b", re.I)
+    injection = re.compile(
+        r"\b(ignore (?:all |any )?(?:previous|prior|above) instructions?|system message|developer message|assistant:|prompt injection|follow these instructions)\b",
+        re.I,
+    )
     for line in p.out:
         # Embedded commands are neither followed nor forwarded to the model.
         # They remain untrusted source data, but are irrelevant to person research.
@@ -216,8 +236,13 @@ class Fetcher:
         if hit:
             if not hit["ok"]:
                 raise FetchError(f"cached failure: {hit['error']}")
-            return {"text": hit["text"], "from_cache": True, "bytes": 0,
-                    "pages": _page_count(hit["text"]), "kind": "pdf" if "[[page " in hit["text"] else "html"}
+            return {
+                "text": hit["text"],
+                "from_cache": True,
+                "bytes": 0,
+                "pages": _page_count(hit["text"]),
+                "kind": "pdf" if "[[page " in hit["text"] else "html",
+            }
         try:
             r = await self._get(url)
             try:
@@ -241,7 +266,7 @@ class Fetcher:
                     text, page_count = await asyncio.wait_for(
                         loop.run_in_executor(None, pdf_to_text, body), timeout=PDF_PARSE_TIMEOUT_SECONDS
                     )
-                except asyncio.TimeoutError as e:
+                except TimeoutError as e:
                     raise FetchError("PDF parsing timed out") from e
                 kind = "pdf"
             else:
@@ -326,7 +351,11 @@ async def discover(model, campaign_id, intake, limit, existing_keys=()):
 async def research_candidate(model, fetcher, campaign_id, intake, candidate):
     """Research ONE compact candidate record. Returns a validated profile dict."""
     pages, page_meta, fetch_errors = {}, {}, []
-    requested_urls = [candidate.get("profile_url"), candidate.get("discovery_source_url"), *(intake.get("source_urls") or [])]
+    requested_urls = [
+        candidate.get("profile_url"),
+        candidate.get("discovery_source_url"),
+        *(intake.get("source_urls") or []),
+    ]
     urls = dict.fromkeys(filter(None, map(normalize_url, requested_urls)))
     skipped = max(0, len(urls) - PAGES_PER_PERSON)
     if skipped:
@@ -351,9 +380,19 @@ async def research_candidate(model, fetcher, campaign_id, intake, candidate):
         campaign_id,
         RESEARCH_INSTRUCTIONS,
         f"Brief: {brief(intake)}\nPerson: {json.dumps(who)}\nFetched pages (untrusted data):\n{snippets or '(none)'}",
-        "profile", PROFILE_SCHEMA, web_search=True)
-    return finalize_profile(candidate, data, known_urls=set(pages) | {normalize_url(u) for u in cited},
-                            pages=pages, fetch_errors=fetch_errors, page_meta=page_meta, strict_grounding=True)
+        "profile",
+        PROFILE_SCHEMA,
+        web_search=True,
+    )
+    return finalize_profile(
+        candidate,
+        data,
+        known_urls=set(pages) | {normalize_url(u) for u in cited},
+        pages=pages,
+        fetch_errors=fetch_errors,
+        page_meta=page_meta,
+        strict_grounding=True,
+    )
 
 
 def finalize_profile(candidate, data, known_urls, pages, fetch_errors=(), page_meta=None, strict_grounding=False):
@@ -368,9 +407,18 @@ def finalize_profile(candidate, data, known_urls, pages, fetch_errors=(), page_m
         if claim and url and url in known_urls and supported:
             locator = (e.get("source_locator") or locate_claim(claim, pages.get(url, "")))[:80] or None
             from .ranking import source_type
-            evidence.append({"claim": claim[:300], "source_url": url, "retrieved_at": ts,
-                             "source_locator": locator, "source_type": source_type(url, candidate),
-                             "provenance": "web", "web_verified": True})
+
+            evidence.append(
+                {
+                    "claim": claim[:300],
+                    "source_url": url,
+                    "retrieved_at": ts,
+                    "source_locator": locator,
+                    "source_type": source_type(url, candidate),
+                    "provenance": "web",
+                    "web_verified": True,
+                }
+            )
         else:
             dropped += 1
 
@@ -417,7 +465,7 @@ def claim_supported(claim, page):
     """Conservative lexical grounding check for fetched content."""
     words = {w for w in re.findall(r"[a-z0-9]+", (claim or "").lower()) if len(w) > 2}
     hay = set(re.findall(r"[a-z0-9]+", (page or "").lower()))
-    return bool(words) and len(words & hay) / len(words) >= .6
+    return bool(words) and len(words & hay) / len(words) >= 0.6
 
 
 def locate_claim(claim, page):

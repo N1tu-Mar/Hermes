@@ -1,4 +1,5 @@
 """Acceptance flow for analytics and notifications (demo fixtures, no network)."""
+
 import csv
 import io
 import time
@@ -32,8 +33,10 @@ def wait(client, cid, until, timeout=5):
 
 
 def campaign(client, text, subtype):
-    intake = {**client.post("/api/parse", json={"text": text, "subtype": subtype}).json()["intake"],
-              "sender_background": BIO}
+    intake = {
+        **client.post("/api/parse", json={"text": text, "subtype": subtype}).json()["intake"],
+        "sender_background": BIO,
+    }
     cid = client.post("/api/campaigns", json={"intake": intake, "budget": 40}).json()["campaign_id"]
     client.post(f"/api/campaigns/{cid}/discover")
     wait(client, cid, lambda p: p["candidates"].get("discovered"))
@@ -61,8 +64,12 @@ def expected_counts(svc, cid):
     cands = svc.store.candidates(cid)["candidates"]
     profiles = svc.store.research(cid)["profiles"].values()
     drafts = svc.cache.list_drafts(cid)
-    inter = lambda kind: len({r["candidate_id"] for r in svc.cache.q(
-        "SELECT candidate_id FROM interactions WHERE campaign_id=? AND kind=?", (cid, kind))})
+    inter = lambda kind: len(
+        {
+            r["candidate_id"]
+            for r in svc.cache.q("SELECT candidate_id FROM interactions WHERE campaign_id=? AND kind=?", (cid, kind))
+        }
+    )
     return {
         "discovered": len(cands),
         "researched": sum(p["status"] in ("researched", "needs_contact_review") for p in profiles),
@@ -72,8 +79,11 @@ def expected_counts(svc, cid):
         "approved": len({d["candidate_id"] for d in drafts if d["status"] in ("approved", "gmail_draft_created")}),
         "scheduled": None,
         "sent": len({d["candidate_id"] for d in drafts if d.get("invited_at")}),
-        "replied": inter("reply"), "interested": inter("interested"), "declined": inter("decline"),
-        "bounced": inter("bounce"), "meeting_booked": inter("meeting"),
+        "replied": inter("reply"),
+        "interested": inter("interested"),
+        "declined": inter("decline"),
+        "bounced": inter("bounce"),
+        "meeting_booked": inter("meeting"),
     }
 
 
@@ -86,23 +96,32 @@ def test_analytics_and_notifications_acceptance(tmp_path):
     svc = service(root)
     with TestClient(create_app(service=svc, token="t"), headers={"x-app-token": "t"}) as client:
         # ---- fixture campaigns through multiple outcomes
-        a, (avery, jordan, sam) = campaign(client, "Rutgers/Princeton professors working on computational "
-                                           "neurodevelopment who may work with undergraduates", None)
+        a, (avery, jordan, sam) = campaign(
+            client,
+            "Rutgers/Princeton professors working on computational neurodevelopment who may work with undergraduates",
+            None,
+        )
         b, (mira, theo) = campaign(client, "startup founders working on climate tech", "startup")
         for cid, cand in ((a, avery), (a, jordan), (b, mira), (b, theo)):
             send(client, cid, cand)
         # sent 5 hours ago, so time-to-reply is measurable
-        svc.cache.x("UPDATE milestones SET at=at-5*3600 WHERE campaign_id=? AND candidate_id=? AND stage='sent'", (a, avery))
+        svc.cache.x(
+            "UPDATE milestones SET at=at-5*3600 WHERE campaign_id=? AND candidate_id=? AND stage='sent'", (a, avery)
+        )
         for kind in ("replied", "interested", "meeting_booked"):
             outcome(client, a, avery, kind)
         outcome(client, a, jordan, "bounced")
         outcome(client, b, mira, "replied")
         outcome(client, b, mira, "declined")
         # outcomes need a recorded send first
-        assert client.post(f"/api/campaigns/{a}/candidates/{sam}/outcomes", json={"outcome": "replied"}).status_code == 409
+        assert (
+            client.post(f"/api/campaigns/{a}/candidates/{sam}/outcomes", json={"outcome": "replied"}).status_code == 409
+        )
+
         # a failing job shows up as a failure and a notification
         async def boom(*_):
             raise RuntimeError("fixture failure")
+
         svc.jobs.handlers["discover"] = boom
         client.post(f"/api/campaigns/{b}/discover")
         wait(client, b, lambda p: p["jobs"].get("failed"))
@@ -114,8 +133,13 @@ def test_analytics_and_notifications_acceptance(tmp_path):
         assert rep["counts"] == plus(exp_a, exp_b)
         by = {x["group"]: x for x in rep["breakdown"]}
         assert by[a]["counts"] == exp_a and by[b]["counts"] == exp_b
-        assert rep["rates"] == {"verified_contact_rate": round(2 / 4, 4), "research_failure_rate": round(1 / 5, 4),
-                                "approval_rate": 1.0, "reply_rate": 0.5, "positive_response_rate": 0.5}
+        assert rep["rates"] == {
+            "verified_contact_rate": round(2 / 4, 4),
+            "research_failure_rate": round(1 / 5, 4),
+            "approval_rate": 1.0,
+            "reply_rate": 0.5,
+            "positive_response_rate": 0.5,
+        }
         assert 4.9 < by[a]["time_to_reply_hours"]["median"] < 5.1
         assert rep["counts"]["scheduled"] is None and rep["usage"]["estimated_cost_usd"] is None  # unknown, not 0
         assert rep["usage"]["api_calls"] == sum(svc.cache.usage(c)["api_calls"] for c in (a, b)) > 0
@@ -128,8 +152,17 @@ def test_analytics_and_notifications_acceptance(tmp_path):
         assert [x["group"] for x in empty["breakdown"]] == [None]  # no identity attached: unknown sender
 
         timeline = client.get(f"/api/campaigns/{a}/candidates/{avery}").json()["timeline"]
-        assert {t["stage"] for t in timeline} == {"discovered", "researched", "contactable", "drafted", "approved",
-                                                  "sent", "replied", "interested", "meeting_booked"}
+        assert {t["stage"] for t in timeline} == {
+            "discovered",
+            "researched",
+            "contactable",
+            "drafted",
+            "approved",
+            "sent",
+            "replied",
+            "interested",
+            "meeting_booked",
+        }
 
         # ---- repeated processing changes nothing
         notes_before = {n["dedupe_key"] for n in client.get("/api/notifications").json()["items"]}
@@ -148,8 +181,11 @@ def test_analytics_and_notifications_acceptance(tmp_path):
         assert "job_failed" in kinds
 
         # follow-up due: theo sent 8 days ago with no response -> exactly one reminder
-        svc.cache.x("UPDATE milestones SET at=at-8*86400 WHERE campaign_id=? AND candidate_id=? AND stage='sent'", (b, theo))
-        client.get("/api/notifications"); client.get("/api/notifications")
+        svc.cache.x(
+            "UPDATE milestones SET at=at-8*86400 WHERE campaign_id=? AND candidate_id=? AND stage='sent'", (b, theo)
+        )
+        client.get("/api/notifications")
+        client.get("/api/notifications")
         due = [n for n in client.get("/api/notifications").json()["items"] if n["kind"] == "followup_due"]
         assert [(n["campaign_id"], n["candidate_id"]) for n in due] == [(b, theo)]
 
@@ -165,8 +201,12 @@ def test_analytics_and_notifications_acceptance(tmp_path):
         svc.cache.x("UPDATE milestones SET at=? WHERE campaign_id=?", (jan, b))
         in_jan = client.get("/api/analytics", params={"start": "2026-01-01", "end": "2026-01-31"}).json()
         assert in_jan["counts"] == exp_b and {r["campaign_id"] for r in in_jan["rows"]} == {b}
-        assert client.get("/api/analytics", params={"campaign_id": a, "start": "2026-01-01", "end": "2026-01-31"}
-                          ).json()["counts"]["discovered"] == 0
+        assert (
+            client.get("/api/analytics", params={"campaign_id": a, "start": "2026-01-01", "end": "2026-01-31"}).json()[
+                "counts"
+            ]["discovered"]
+            == 0
+        )
         assert client.get("/api/analytics", params={"start": "2026-02-01", "end": "2026-01-01"}).status_code == 400
 
         # ---- CSV export matches the JSON report
@@ -174,8 +214,9 @@ def test_analytics_and_notifications_acceptance(tmp_path):
         r = client.get("/api/analytics/export", params={"kind": "rows"})
         assert r.headers["content-type"].startswith("text/csv") and "attachment" in r.headers["content-disposition"]
         rows = list(csv.DictReader(io.StringIO(r.text)))
-        assert {(x["campaign_id"], x["candidate_id"]) for x in rows} == \
-               {(x["campaign_id"], x["candidate_id"]) for x in full["rows"]}
+        assert {(x["campaign_id"], x["candidate_id"]) for x in rows} == {
+            (x["campaign_id"], x["candidate_id"]) for x in full["rows"]
+        }
         assert sum(bool(x["replied_at"]) for x in rows) == full["counts"]["replied"]
         agg = list(csv.DictReader(io.StringIO(client.get("/api/analytics/export", params={"kind": "aggregate"}).text)))
         assert {x["group"]: int(x["sent"]) for x in agg} == {x["group"]: x["counts"]["sent"] for x in full["breakdown"]}
@@ -196,7 +237,9 @@ def test_analytics_and_notifications_acceptance(tmp_path):
         assert n["unread"] == unread
         assert dismiss_id not in {x["id"] for x in n["items"]}
         assert next(x for x in n["items"] if x["id"] == read_id)["read_at"]
-        assert dismiss_id in {x["id"] for x in client.get("/api/notifications", params={"include_dismissed": True}).json()["items"]}
+        assert dismiss_id in {
+            x["id"] for x in client.get("/api/notifications", params={"include_dismissed": True}).json()["items"]
+        }
         assert client.get("/api/analytics", params={"campaign_id": a}).json()["counts"] == exp_a
         client.post("/api/notifications/read-all")
         assert client.get("/api/notifications").json()["unread"] == 0

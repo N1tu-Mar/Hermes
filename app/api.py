@@ -13,8 +13,8 @@ credentials, so a request can only ever reach its own user's service. The
 local app token is never read, written, or accepted in this mode.
 """
 
-import fcntl
 import contextvars
+import fcntl
 import logging
 import os
 import re
@@ -29,9 +29,10 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import analytics, cache as cache_mod, contracts, demo, logs
+from . import analytics, contracts, demo, logs
+from . import cache as cache_mod
 from .cache import Cache
-from .campaigns import CampaignService, Rejected, parse_request
+from .campaigns import CampaignService, Rejected
 from .config import Config, ConfigError, load_config, load_env
 from .migrations import migrate_campaigns
 from .sending import Blocked
@@ -90,8 +91,12 @@ def build_service(cfg, data_root=None, openai_key=None, gmail=None):
             log.warning("Gmail not connected: %s", type(e).__name__)
             gmail_error = str(e) or f"Gmail connection failed ({type(e).__name__})"
     if gmail_error:  # only when Gmail was set up before; a fresh install without Gmail stays quiet
-        analytics.notify(cache, f"oauth:{time.strftime('%Y-%m-%d')}", "oauth",
-                         f"{gmail_error}; run `python -m app.gmail` to reconnect")
+        analytics.notify(
+            cache,
+            f"oauth:{time.strftime('%Y-%m-%d')}",
+            "oauth",
+            f"{gmail_error}; run `python -m app.gmail` to reconnect",
+        )
     svc = CampaignService(store, cache, model, fetcher, gmail, Workspace(cache, data_root))
     svc.outreach.gmail_error = gmail_error
     return svc
@@ -389,8 +394,12 @@ def create_app(service=None, token=None, config=None):
     @app.get("/api/status")
     def status():
         s = svc()
-        return {"demo": getattr(s.model, "demo", False), "model": s.model.model,
-                **s.gmail_status(), "sending": s.outbox.status()}
+        return {
+            "demo": getattr(s.model, "demo", False),
+            "model": s.model.model,
+            **s.gmail_status(),
+            "sending": s.outbox.status(),
+        }
 
     # Reusable messaging workspace. Template versions are immutable snapshots.
     @app.get("/api/templates")
@@ -461,8 +470,11 @@ def create_app(service=None, token=None, config=None):
         return await svc().parse_intake(body.get("text", ""), body.get("mode"), body.get("subtype"))
 
     def csv_response(text, filename):
-        return Response(text, media_type="text/csv; charset=utf-8",
-                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        return Response(
+            text,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/api/campaigns")
     def list_campaigns(q: str = "", status: str = "active", subtype: str = ""):
@@ -470,7 +482,9 @@ def create_app(service=None, token=None, config=None):
 
     @app.post("/api/campaigns")
     def create(body: dict = Body(...)):
-        cid = svc().create(body.get("intake") or {}, body.get("max_candidates", 20), body.get("budget", 60), body.get("name"))
+        cid = svc().create(
+            body.get("intake") or {}, body.get("max_candidates", 20), body.get("budget", 60), body.get("name")
+        )
         return {"campaign_id": cid}
 
     @app.get("/api/campaigns/{cid}")
@@ -595,22 +609,31 @@ def create_app(service=None, token=None, config=None):
 
     @app.post("/api/campaigns/{cid}/drafts/generate")
     def generate(cid: str, body: dict = Body(...)):
-        return svc().generate(cid, body.get("candidate_ids") or [], bool(body.get("followup")),
-                              body.get("template_id"), body.get("template_version"))
+        return svc().generate(
+            cid,
+            body.get("candidate_ids") or [],
+            bool(body.get("followup")),
+            body.get("template_id"),
+            body.get("template_version"),
+        )
 
     @app.get("/api/campaigns/{cid}/assets")
     def assets(cid: str):
         svc()._require(cid)
-        return {"attachment_ids": svc().workspace.asset_ids(cid, "attachment"),
-                "content_ids": svc().workspace.asset_ids(cid, "content"),
-                "attachments": svc().workspace.campaign_attachments(cid),
-                "content": svc().workspace.campaign_content(cid)}
+        return {
+            "attachment_ids": svc().workspace.asset_ids(cid, "attachment"),
+            "content_ids": svc().workspace.asset_ids(cid, "content"),
+            "attachments": svc().workspace.campaign_attachments(cid),
+            "content": svc().workspace.campaign_content(cid),
+        }
 
     @app.put("/api/campaigns/{cid}/assets")
     def set_assets(cid: str, body: dict = Body(...)):
         svc()._require(cid)
-        return {"attachment_ids": svc().workspace.set_assets(cid, "attachment", body.get("attachment_ids") or []),
-                "content_ids": svc().workspace.set_assets(cid, "content", body.get("content_ids") or [])}
+        return {
+            "attachment_ids": svc().workspace.set_assets(cid, "attachment", body.get("attachment_ids") or []),
+            "content_ids": svc().workspace.set_assets(cid, "content", body.get("content_ids") or []),
+        }
 
     @app.get("/api/campaigns/{cid}/rules")
     def rules(cid: str):
@@ -630,10 +653,12 @@ def create_app(service=None, token=None, config=None):
     def do_not_contact(cid: str, cand: str, body: dict = Body(...)):
         svc()._require(cid)
         candidate = next((c for c in svc().store.candidates(cid)["candidates"] if c["candidate_id"] == cand), None)
-        if not candidate: raise KeyError(cand)
+        if not candidate:
+            raise KeyError(cand)
         profile = svc().store.research(cid)["profiles"].get(cand) or {}
-        return svc().workspace.set_do_not_contact(cid, cand, candidate, profile,
-                                                   bool(body.get("do_not_contact", True)), body.get("reason"))
+        return svc().workspace.set_do_not_contact(
+            cid, cand, candidate, profile, bool(body.get("do_not_contact", True)), body.get("reason")
+        )
 
     @app.get("/api/campaigns/{cid}/candidates/{cand}")
     def detail(cid: str, cand: str, s: Svc):
@@ -713,17 +738,26 @@ def create_app(service=None, token=None, config=None):
         return {"timeline": svc().delete_outcome(cid, cand, outcome)}
 
     @app.get("/api/analytics")
-    def analytics_report(campaign_id: str | None = None, start: str | None = None, end: str | None = None,
-                         group_by: str = "campaign"):
+    def analytics_report(
+        campaign_id: str | None = None, start: str | None = None, end: str | None = None, group_by: str = "campaign"
+    ):
         return analytics.report(svc(), campaign_id or None, start or None, end or None, group_by)
 
     @app.get("/api/analytics/export")
-    def analytics_export(kind: str = "aggregate", campaign_id: str | None = None, start: str | None = None,
-                         end: str | None = None, group_by: str = "campaign"):
+    def analytics_export(
+        kind: str = "aggregate",
+        campaign_id: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        group_by: str = "campaign",
+    ):
         rep = analytics.report(svc(), campaign_id or None, start or None, end or None, group_by)
         name = f"hermes-{kind}-{campaign_id or 'all'}-{start or 'start'}-{end or 'now'}.csv"
-        return Response(analytics.to_csv(rep, kind), media_type="text/csv",
-                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+        return Response(
+            analytics.to_csv(rep, kind),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
 
     @app.get("/api/notifications")
     def notifications(include_dismissed: bool = False):
@@ -782,8 +816,9 @@ def create_app(service=None, token=None, config=None):
 
     @app.post("/api/campaigns/{cid}/sends")
     def send_confirm(cid: str, body: dict = Body(...)):
-        return svc().confirm_send(cid, str(body.get("candidate_id", "")), str(body.get("approval_hash", "")),
-                                  body.get("scheduled_at") or None)
+        return svc().confirm_send(
+            cid, str(body.get("candidate_id", "")), str(body.get("approval_hash", "")), body.get("scheduled_at") or None
+        )
 
     @app.get("/api/campaigns/{cid}/sends")
     def send_list(cid: str):

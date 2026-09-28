@@ -12,9 +12,20 @@ SCHEMA_VERSION = 1
 MODES = {"research", "outreach"}
 SUBTYPES = {None, "startup", "research_professor", "speaker_mentor"}
 INTAKE_FIELDS = (
-    "mode", "subtype", "raw_request", "organizations", "locations",
-    "research_areas", "industries", "work_style", "other_criteria",
-    "outreach_goal", "event_details", "sender_background", "sender_identity_id", "source_urls",
+    "mode",
+    "subtype",
+    "raw_request",
+    "organizations",
+    "locations",
+    "research_areas",
+    "industries",
+    "work_style",
+    "other_criteria",
+    "outreach_goal",
+    "event_details",
+    "sender_background",
+    "sender_identity_id",
+    "source_urls",
 )
 LIST_FIELDS = {"organizations", "locations", "research_areas", "industries", "source_urls"}
 
@@ -29,12 +40,33 @@ CANDIDATE_STATES = {
 }
 DRAFT_STATES = {"generated", "needs_review", "approved", "gmail_draft_created", "blocked"}
 
-CANDIDATE_KEYS = ("candidate_id", "name", "organization", "role",
-                  "profile_url", "discovery_source_url", "status", "ranking",
-                  "pinned", "manual_score_adjustment")
-PROFILE_KEYS = ("candidate_id", "name", "organization", "role", "contact_email",
-                "contact_source_url", "email_verified_on_page", "summary",
-                "research_interests", "fit_reason", "evidence", "researched_at", "status")
+CANDIDATE_KEYS = (
+    "candidate_id",
+    "name",
+    "organization",
+    "role",
+    "profile_url",
+    "discovery_source_url",
+    "status",
+    "ranking",
+    "pinned",
+    "manual_score_adjustment",
+)
+PROFILE_KEYS = (
+    "candidate_id",
+    "name",
+    "organization",
+    "role",
+    "contact_email",
+    "contact_source_url",
+    "email_verified_on_page",
+    "summary",
+    "research_interests",
+    "fit_reason",
+    "evidence",
+    "researched_at",
+    "status",
+)
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -104,7 +136,9 @@ def profile_problems(pr):
             p.append("manual evidence mislabeled as web verified")
     if pr.get("email_verified_on_page") and not (pr.get("contact_email") and pr.get("contact_source_url")):
         p.append("email marked verified without email and source")
-    if pr.get("provenance", {}).get("contact_email", {}).get("kind") == "manual_correction" and pr.get("email_verified_on_page"):
+    if pr.get("provenance", {}).get("contact_email", {}).get("kind") == "manual_correction" and pr.get(
+        "email_verified_on_page"
+    ):
         p.append("manually corrected email mislabeled as web verified")
     if pr.get("contact_email") and not EMAIL_RE.fullmatch(pr["contact_email"]):
         p.append("malformed contact_email")

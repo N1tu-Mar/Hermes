@@ -386,8 +386,11 @@ def forget(data_root, email=None, name=None):
                 clauses.append("lower(name)=?")
                 args.append(name)
             where = " OR ".join(clauses)
-            ids = {r[0] for table in ("people", "contacts")
-                   for r in db.execute(f"SELECT id FROM {table} WHERE {where}", args)}
+            ids = {
+                r[0]
+                for table in ("people", "contacts")
+                for r in db.execute(f"SELECT id FROM {table} WHERE {where}", args)
+            }
             if ids:
                 marks = ",".join("?" for _ in ids)
                 db.execute(f"DELETE FROM interactions WHERE contact_id IN ({marks})", tuple(ids))

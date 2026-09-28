@@ -1,4 +1,5 @@
 """Backup/restore, deletion, and retention operations."""
+
 import json
 import sqlite3
 import time
@@ -129,10 +130,16 @@ def test_purge_applies_retention(tmp_path):
     old = time.time() - 200 * 86400
     cache.x("INSERT INTO events (campaign_id, at, message) VALUES ('c', ?, 'old')", (old,))
     cache.event("c", "new")
-    cache.x("INSERT INTO jobs (job_id,campaign_id,kind,candidate_id,status,error,created_at,updated_at) "
-            "VALUES ('j1','c','research',NULL,'done',NULL,?,?)", (old, old))
-    cache.x("INSERT INTO jobs (job_id,campaign_id,kind,candidate_id,status,error,created_at,updated_at) "
-            "VALUES ('j2','c','research',NULL,'interrupted',NULL,?,?)", (old, old))
+    cache.x(
+        "INSERT INTO jobs (job_id,campaign_id,kind,candidate_id,status,error,created_at,updated_at) "
+        "VALUES ('j1','c','research',NULL,'done',NULL,?,?)",
+        (old, old),
+    )
+    cache.x(
+        "INSERT INTO jobs (job_id,campaign_id,kind,candidate_id,status,error,created_at,updated_at) "
+        "VALUES ('j2','c','research',NULL,'interrupted',NULL,?,?)",
+        (old, old),
+    )
     cache.x("INSERT INTO pages VALUES ('https://x.org/', ?, 1, 't', NULL)", (old,))
     cache.close()
     assert ops.purge(root, 90) == {"pages": 1, "research_cache": 0, "events": 1, "jobs": 1}

@@ -2,15 +2,13 @@
 bounded state under many distinct usernames, concurrency safety, input-length
 validation, and safe scrypt-parameter migration."""
 
-import sqlite3
 import threading
-import time
 
 import pytest
 from cryptography.fernet import Fernet
 
 from app import auth
-from app.auth import Accounts, MAX_FAILURE_ROWS, MAX_FAILURES, SOURCE_MAX_FAILURES
+from app.auth import MAX_FAILURE_ROWS, MAX_FAILURES, SOURCE_MAX_FAILURES, Accounts
 
 PW = "correct-horse-battery-123"
 
@@ -133,7 +131,7 @@ def test_password_hash_migrated_to_current_params_on_login(acc):
 
 def test_cleanup_expired_is_independent_of_login(acc, monkeypatch):
     tok, csrf, uid = acc.login("alice", PW)
-    row = acc.q("SELECT seen_at FROM sessions WHERE token_hash IS NOT NULL")[0]
+    acc.q("SELECT seen_at FROM sessions WHERE token_hash IS NOT NULL")[0]
     acc.x("UPDATE sessions SET seen_at=?, created_at=? WHERE user_id=?", (0, 0, uid))
     # login() itself no longer sweeps sessions
     acc.login("alice", "wrong")

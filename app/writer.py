@@ -72,9 +72,19 @@ def check_draft(subject, body, outline, profile, used_ids):
     """Deterministic guardrails. Returns list of human-readable issues (empty = clean)."""
     issues = []
     text = f"{subject}\n{body}"
-    facts = " ".join(e["claim"] for e in outline["evidence"]) + " " + outline["sender_context"] + " " + \
-        json.dumps(outline.get("event_details") or "") + " " + json.dumps(outline.get("earlier_invite") or "") + " " + json.dumps(outline.get("prior_contact") or "") + \
-        " " + outline["ask"]
+    facts = (
+        " ".join(e["claim"] for e in outline["evidence"])
+        + " "
+        + outline["sender_context"]
+        + " "
+        + json.dumps(outline.get("event_details") or "")
+        + " "
+        + json.dumps(outline.get("earlier_invite") or "")
+        + " "
+        + json.dumps(outline.get("prior_contact") or "")
+        + " "
+        + outline["ask"]
+    )
     if not subject:
         issues.append("empty subject")
     if not body:

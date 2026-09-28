@@ -23,7 +23,7 @@ def _origin_problem(url):
     """Why `url` is not a bare origin, or None. (Scheme/HTTPS rules are enforced separately.)"""
     try:
         p = urlsplit(url)
-        p.port  # raises ValueError when out of range or not numeric
+        _ = p.port  # raises ValueError when out of range or not numeric
     except ValueError:
         return "invalid URL or port"
     if p.scheme not in ("http", "https") or not p.hostname:

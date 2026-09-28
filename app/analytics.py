@@ -10,6 +10,7 @@ unknown, scheduled sends are unknown (HERMES has no scheduler), cost is unknown
 unless per-token prices are configured, and usage is unknown for breakdowns it
 can't be attributed to (organization, template, sender).
 """
+
 import csv
 import hashlib
 import io
@@ -22,15 +23,32 @@ import sys
 import time
 from datetime import datetime, timedelta
 
-FUNNEL = ("discovered", "researched", "contactable", "drafted", "approved", "scheduled",
-          "sent", "replied", "interested", "declined", "bounced", "meeting_booked")
+FUNNEL = (
+    "discovered",
+    "researched",
+    "contactable",
+    "drafted",
+    "approved",
+    "scheduled",
+    "sent",
+    "replied",
+    "interested",
+    "declined",
+    "bounced",
+    "meeting_booked",
+)
 OUTCOMES = ("replied", "interested", "declined", "bounced", "meeting_booked")
 STAGES = set(FUNNEL) - {"scheduled"} | {"research_failed"}
 GROUPS = ("campaign", "campaign_type", "sender", "template", "organization")
 CLOSED = {"replied", "interested", "declined", "bounced", "meeting_booked"}  # stops a follow-up reminder
 # Existing interaction kinds (see Workspace.record_contacted and rule followup_no_reply) so the contact ledger sees outcomes.
-INTERACTION_KIND = {"replied": "reply", "interested": "interested", "declined": "decline",
-                    "bounced": "bounce", "meeting_booked": "meeting"}
+INTERACTION_KIND = {
+    "replied": "reply",
+    "interested": "interested",
+    "declined": "decline",
+    "bounced": "bounce",
+    "meeting_booked": "meeting",
+}
 
 
 # ---------------------------------------------------------------- recording
@@ -39,8 +57,9 @@ def milestone(cache, campaign_id, candidate_id, stage, at=None):
     if stage not in STAGES:
         raise ValueError(f"unknown stage {stage!r}")
     with cache.lock:
-        cur = cache.db.execute("INSERT OR IGNORE INTO milestones VALUES (?,?,?,?)",
-                               (campaign_id, candidate_id, stage, at or time.time()))
+        cur = cache.db.execute(
+            "INSERT OR IGNORE INTO milestones VALUES (?,?,?,?)", (campaign_id, candidate_id, stage, at or time.time())
+        )
         return cur.rowcount == 1
 
 
@@ -50,8 +69,10 @@ def delivery(cache, campaign_id, candidate_id, delivered_at):
 
 
 def timeline(cache, campaign_id, candidate_id):
-    return cache.q("SELECT stage, at FROM milestones WHERE campaign_id=? AND candidate_id=? ORDER BY at",
-                   (campaign_id, candidate_id))
+    return cache.q(
+        "SELECT stage, at FROM milestones WHERE campaign_id=? AND candidate_id=? ORDER BY at",
+        (campaign_id, candidate_id),
+    )
 
 
 def notify(cache, key, kind, message, campaign_id=None, candidate_id=None):
@@ -59,7 +80,9 @@ def notify(cache, key, kind, message, campaign_id=None, candidate_id=None):
     with cache.lock:
         cur = cache.db.execute(
             "INSERT OR IGNORE INTO notifications (dedupe_key, kind, message, campaign_id, candidate_id, created_at) "
-            "VALUES (?,?,?,?,?,?)", (key, kind, message, campaign_id, candidate_id, time.time()))
+            "VALUES (?,?,?,?,?,?)",
+            (key, kind, message, campaign_id, candidate_id, time.time()),
+        )
         new = cur.rowcount == 1
     if new:
         desktop(message)
@@ -71,7 +94,7 @@ def desktop(message):
     if os.environ.get("HERMES_DESKTOP_NOTIFICATIONS") != "1":
         return
     if sys.platform == "darwin":
-        cmd = ["osascript", "-e", f"display notification {json.dumps(message)} with title \"HERMES\""]
+        cmd = ["osascript", "-e", f'display notification {json.dumps(message)} with title "HERMES"']
     elif shutil.which("notify-send"):
         cmd = ["notify-send", "HERMES", message]
     else:
@@ -99,15 +122,23 @@ def followups_due(cache, days=None, now=None):
     """Notify once per sent message with no recorded response after N days (HERMES_FOLLOWUP_DAYS, default 7)."""
     days = float(days if days is not None else os.environ.get("HERMES_FOLLOWUP_DAYS") or 7)
     cutoff = (now or time.time()) - days * 86400
-    rows = cache.q("""SELECT s.campaign_id, s.candidate_id, s.at FROM milestones s
+    closed_marks = ",".join("?" * len(CLOSED))
+    rows = cache.q(
+        f"""SELECT s.campaign_id, s.candidate_id, s.at FROM milestones s
                       WHERE s.stage='sent' AND s.at<=? AND NOT EXISTS (
                         SELECT 1 FROM milestones o WHERE o.campaign_id=s.campaign_id
-                        AND o.candidate_id=s.candidate_id AND o.stage IN (%s))""" % ",".join("?" * len(CLOSED)),
-                   (cutoff, *sorted(CLOSED)))
+                        AND o.candidate_id=s.candidate_id AND o.stage IN ({closed_marks}))""",
+        (cutoff, *sorted(CLOSED)),
+    )
     for r in rows:
-        notify(cache, f"followup_due:{r['campaign_id']}:{r['candidate_id']}:{int(r['at'])}", "followup_due",
-               f"{r['candidate_id']}: no response recorded {days:g} days after sending; follow-up due",
-               r["campaign_id"], r["candidate_id"])
+        notify(
+            cache,
+            f"followup_due:{r['campaign_id']}:{r['candidate_id']}:{int(r['at'])}",
+            "followup_due",
+            f"{r['candidate_id']}: no response recorded {days:g} days after sending; follow-up due",
+            r["campaign_id"],
+            r["candidate_id"],
+        )
 
 
 def snapshot_key(prefix, campaign_id, items):
@@ -145,11 +176,15 @@ def backfill(svc):
                 milestone(svc.cache, cid, d["candidate_id"], "approved", d["updated_at"])
             if d.get("invited_at"):
                 delivery(svc.cache, cid, d["candidate_id"], d["invited_at"])
-        for c in svc.cache.q("SELECT candidate_id,sent_at FROM outreach_contacts WHERE campaign_id=? AND sent_at IS NOT NULL",
-                             (cid,)):
+        for c in svc.cache.q(
+            "SELECT candidate_id,sent_at FROM outreach_contacts WHERE campaign_id=? AND sent_at IS NOT NULL", (cid,)
+        ):
             delivery(svc.cache, cid, c["candidate_id"], c["sent_at"])
-        for s in svc.cache.q("SELECT candidate_id,finished_at FROM sends WHERE campaign_id=? AND "
-                             "status IN ('sent','replied','bounced','declined') AND finished_at IS NOT NULL", (cid,)):
+        for s in svc.cache.q(
+            "SELECT candidate_id,finished_at FROM sends WHERE campaign_id=? AND "
+            "status IN ('sent','replied','bounced','declined') AND finished_at IS NOT NULL",
+            (cid,),
+        ):
             delivery(svc.cache, cid, s["candidate_id"], s["finished_at"])
 
 
@@ -200,21 +235,33 @@ def contact_rows(svc, campaign_id=None, start=None, end=None):
             reached = {s for s, at in times.items() if _in(at, lo, hi)}
             if not reached:
                 continue
-            rows.append({"campaign_id": cid, "candidate_id": c["candidate_id"], "name": c.get("name"),
-                         "organization": c.get("organization") or None,
-                         "campaign_type": cdoc["intake"].get("subtype") or cdoc["intake"].get("mode"),
-                         "sender": sender, "template": templates.get(c["candidate_id"]),
-                         "status": c.get("status"), "stages": reached, "times": times})
+            rows.append(
+                {
+                    "campaign_id": cid,
+                    "candidate_id": c["candidate_id"],
+                    "name": c.get("name"),
+                    "organization": c.get("organization") or None,
+                    "campaign_type": cdoc["intake"].get("subtype") or cdoc["intake"].get("mode"),
+                    "sender": sender,
+                    "template": templates.get(c["candidate_id"]),
+                    "status": c.get("status"),
+                    "stages": reached,
+                    "times": times,
+                }
+            )
     return rows
 
 
 def _sender(cache, campaign_id):
     """Sender identity is known only when the campaign's reusable content/attachments belong to one identity."""
-    names = cache.q("""SELECT DISTINCT i.display_name FROM campaign_assets a
+    names = cache.q(
+        """SELECT DISTINCT i.display_name FROM campaign_assets a
                        LEFT JOIN reusable_content r ON a.asset_type='content' AND r.content_id=a.asset_id
                        LEFT JOIN attachments t ON a.asset_type='attachment' AND t.attachment_id=a.asset_id
                        JOIN identities i ON i.id=COALESCE(r.identity_id, t.identity_id)
-                       WHERE a.campaign_id=?""", (campaign_id,))
+                       WHERE a.campaign_id=?""",
+        (campaign_id,),
+    )
     return names[0]["display_name"] if len(names) == 1 else None
 
 
@@ -229,45 +276,72 @@ def aggregate(rows):
     counts["research_failed"] = has("research_failed")
     attempted = sum(bool({"researched", "research_failed"} & r["stages"]) for r in rows)
     positive = sum(bool({"interested", "meeting_booked"} & r["stages"]) for r in rows)
-    hours = [(r["times"]["replied"] - r["times"]["sent"]) / 3600 for r in rows
-             if "replied" in r["stages"] and "sent" in r["times"]]
-    return {"counts": counts, "rates": {
-        "verified_contact_rate": _rate(counts["contactable"], counts["researched"]),
-        "research_failure_rate": _rate(counts["research_failed"], attempted),
-        "approval_rate": _rate(counts["approved"], counts["drafted"]),
-        "reply_rate": _rate(counts["replied"], counts["sent"]),
-        "positive_response_rate": _rate(positive, counts["replied"]),
-    }, "time_to_reply_hours": {
-        "n": len(hours),
-        "median": round(statistics.median(hours), 2) if hours else None,
-        "mean": round(statistics.fmean(hours), 2) if hours else None,
-    }}
+    hours = [
+        (r["times"]["replied"] - r["times"]["sent"]) / 3600
+        for r in rows
+        if "replied" in r["stages"] and "sent" in r["times"]
+    ]
+    return {
+        "counts": counts,
+        "rates": {
+            "verified_contact_rate": _rate(counts["contactable"], counts["researched"]),
+            "research_failure_rate": _rate(counts["research_failed"], attempted),
+            "approval_rate": _rate(counts["approved"], counts["drafted"]),
+            "reply_rate": _rate(counts["replied"], counts["sent"]),
+            "positive_response_rate": _rate(positive, counts["replied"]),
+        },
+        "time_to_reply_hours": {
+            "n": len(hours),
+            "median": round(statistics.median(hours), 2) if hours else None,
+            "mean": round(statistics.fmean(hours), 2) if hours else None,
+        },
+    }
 
 
 def usage(svc, campaign_ids, start=None, end=None):
     lo, hi = date_range(start, end)
     if not campaign_ids:
-        return {"api_calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_hits": 0,
-                "estimated_cost_usd": _cost(0, 0), "processing_seconds": None, "jobs_timed": 0}
+        return {
+            "api_calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_hits": 0,
+            "estimated_cost_usd": _cost(0, 0),
+            "processing_seconds": None,
+            "jobs_timed": 0,
+        }
     marks = ",".join("?" * len(campaign_ids))
     where, args = f"campaign_id IN ({marks})", list(campaign_ids)
     dated = where
     if lo is not None or hi is not None:
-        dated += " AND at IS NOT NULL" + (" AND at>=?" if lo is not None else "") + (" AND at<?" if hi is not None else "")
+        dated += (
+            " AND at IS NOT NULL" + (" AND at>=?" if lo is not None else "") + (" AND at<?" if hi is not None else "")
+        )
         args_dated = args + [x for x in (lo, hi) if x is not None]
     else:
         args_dated = args
-    u = svc.cache.q(f"""SELECT COALESCE(SUM(api_calls),0) api_calls, COALESCE(SUM(input_tokens),0) input_tokens,
+    u = svc.cache.q(
+        f"""SELECT COALESCE(SUM(api_calls),0) api_calls, COALESCE(SUM(input_tokens),0) input_tokens,
                         COALESCE(SUM(output_tokens),0) output_tokens, COALESCE(SUM(cache_hits),0) cache_hits
-                        FROM usage_log WHERE {dated}""", args_dated)[0]
+                        FROM usage_log WHERE {dated}""",
+        args_dated,
+    )[0]
     jobs_where = dated.replace(" at", " updated_at")
-    j = svc.cache.q(f"""SELECT COUNT(*) n, SUM(updated_at-started_at) secs FROM jobs WHERE {jobs_where}
-                        AND started_at IS NOT NULL AND status IN ('done','failed')""", args_dated)[0]
-    out = {**u, "estimated_cost_usd": _cost(u["input_tokens"], u["output_tokens"]),
-           "processing_seconds": round(j["secs"], 2) if j["n"] else None, "jobs_timed": j["n"]}
+    j = svc.cache.q(
+        f"""SELECT COUNT(*) n, SUM(updated_at-started_at) secs FROM jobs WHERE {jobs_where}
+                        AND started_at IS NOT NULL AND status IN ('done','failed')""",
+        args_dated,
+    )[0]
+    out = {
+        **u,
+        "estimated_cost_usd": _cost(u["input_tokens"], u["output_tokens"]),
+        "processing_seconds": round(j["secs"], 2) if j["n"] else None,
+        "jobs_timed": j["n"],
+    }
     if dated != where:
-        out["undated_usage_excluded"] = bool(svc.cache.q(
-            f"SELECT 1 FROM usage_log WHERE {where} AND at IS NULL LIMIT 1", args))
+        out["undated_usage_excluded"] = bool(
+            svc.cache.q(f"SELECT 1 FROM usage_log WHERE {where} AND at IS NULL LIMIT 1", args)
+        )
     return out
 
 
@@ -296,20 +370,32 @@ def report(svc, campaign_id=None, start=None, end=None, group_by="campaign"):
         a = aggregate(members)
         cids = sorted({r["campaign_id"] for r in members})
         attributable = group_by in ("campaign", "campaign_type")
-        breakdown.append({"group": key, "contacts": len(members), "campaign_ids": cids, **a,
-                          "usage": usage(svc, _group_campaigns(svc, scope, group_by, key), start, end)
-                          if attributable else None})
-    return {"filters": {"campaign_id": campaign_id, "start": start, "end": end, "group_by": group_by},
-            **aggregate(rows), "usage": usage(svc, scope, start, end), "breakdown": breakdown,
-            "rows": [_public(r) for r in rows],
-            "failures": failures(svc, scope, start, end), "activity": activity(svc, scope, start, end),
-            "notes": {
-                "scheduled": "HERMES has no scheduled sending; shown as unknown.",
-                "outcomes": "Sent and later outcomes are recorded by you; 0 means none recorded. No open tracking.",
-                "cost": None if _cost(0, 0) is not None else
-                "Set HERMES_PRICE_INPUT_PER_MTOK and HERMES_PRICE_OUTPUT_PER_MTOK to estimate cost.",
-                "breakdown_usage": "Usage is per campaign; it can't be split by organization, template, or sender.",
-            }}
+        breakdown.append(
+            {
+                "group": key,
+                "contacts": len(members),
+                "campaign_ids": cids,
+                **a,
+                "usage": usage(svc, _group_campaigns(svc, scope, group_by, key), start, end) if attributable else None,
+            }
+        )
+    return {
+        "filters": {"campaign_id": campaign_id, "start": start, "end": end, "group_by": group_by},
+        **aggregate(rows),
+        "usage": usage(svc, scope, start, end),
+        "breakdown": breakdown,
+        "rows": [_public(r) for r in rows],
+        "failures": failures(svc, scope, start, end),
+        "activity": activity(svc, scope, start, end),
+        "notes": {
+            "scheduled": "HERMES has no scheduled sending; shown as unknown.",
+            "outcomes": "Sent and later outcomes are recorded by you; 0 means none recorded. No open tracking.",
+            "cost": None
+            if _cost(0, 0) is not None
+            else "Set HERMES_PRICE_INPUT_PER_MTOK and HERMES_PRICE_OUTPUT_PER_MTOK to estimate cost.",
+            "breakdown_usage": "Usage is per campaign; it can't be split by organization, template, or sender.",
+        },
+    }
 
 
 def _group_campaigns(svc, scope, group_by, key):
@@ -327,9 +413,11 @@ def _group_campaigns(svc, scope, group_by, key):
 
 
 def _public(r):
-    return {**{k: v for k, v in r.items() if k not in ("stages", "times")},
-            "stages": sorted(r["stages"], key=lambda s: (FUNNEL + ("research_failed",)).index(s)),
-            "times": r["times"]}
+    return {
+        **{k: v for k, v in r.items() if k not in ("stages", "times")},
+        "stages": sorted(r["stages"], key=lambda s: (FUNNEL + ("research_failed",)).index(s)),
+        "times": r["times"],
+    }
 
 
 def failures(svc, scope, start=None, end=None):
@@ -338,16 +426,39 @@ def failures(svc, scope, start=None, end=None):
     for cid in scope:
         for j in svc.cache.jobs(cid, "failed"):
             if _in(j["updated_at"], lo, hi):
-                out.append({"type": "job_failed", "campaign_id": cid, "candidate_id": _cand(j["candidate_id"]),
-                            "at": j["updated_at"], "detail": f"{j['kind']}: {j['error']}"})
-        for m in svc.cache.q("SELECT candidate_id, at FROM milestones WHERE campaign_id=? AND stage='research_failed'", (cid,)):
+                out.append(
+                    {
+                        "type": "job_failed",
+                        "campaign_id": cid,
+                        "candidate_id": _cand(j["candidate_id"]),
+                        "at": j["updated_at"],
+                        "detail": f"{j['kind']}: {j['error']}",
+                    }
+                )
+        for m in svc.cache.q(
+            "SELECT candidate_id, at FROM milestones WHERE campaign_id=? AND stage='research_failed'", (cid,)
+        ):
             if _in(m["at"], lo, hi):
-                out.append({"type": "research_failed", "campaign_id": cid, "candidate_id": m["candidate_id"],
-                            "at": m["at"], "detail": "no sourced evidence or model/budget error"})
+                out.append(
+                    {
+                        "type": "research_failed",
+                        "campaign_id": cid,
+                        "candidate_id": m["candidate_id"],
+                        "at": m["at"],
+                        "detail": "no sourced evidence or model/budget error",
+                    }
+                )
         for d in svc.cache.list_drafts(cid):
             if d["status"] == "blocked" and _in(d["updated_at"], lo, hi):
-                out.append({"type": "draft_blocked", "campaign_id": cid, "candidate_id": d["candidate_id"],
-                            "at": d["updated_at"], "detail": "; ".join(d["issues"])})
+                out.append(
+                    {
+                        "type": "draft_blocked",
+                        "campaign_id": cid,
+                        "candidate_id": d["candidate_id"],
+                        "at": d["updated_at"],
+                        "detail": "; ".join(d["issues"]),
+                    }
+                )
     return sorted(out, key=lambda x: -x["at"])[:200]
 
 
@@ -368,9 +479,11 @@ def activity(svc, scope, start=None, end=None, limit=100):
     sql = f"SELECT campaign_id, at, message FROM events WHERE campaign_id IN ({','.join('?' * len(scope))})"
     args = list(scope)
     if lo is not None:
-        sql += " AND at>=?"; args.append(lo)
+        sql += " AND at>=?"
+        args.append(lo)
     if hi is not None:
-        sql += " AND at<?"; args.append(hi)
+        sql += " AND at<?"
+        args.append(hi)
     return svc.cache.q(sql + " ORDER BY id DESC LIMIT ?", (*args, limit))
 
 
@@ -379,28 +492,83 @@ def to_csv(rep, kind):
     buf = io.StringIO()
     blank = lambda v: "" if v is None else v  # empty cell = unknown; 0 = zero
     if kind == "aggregate":
-        cols = ["group_by", "group", "contacts", *FUNNEL, "research_failed", *rep["rates"],
-                "median_hours_to_reply", "api_calls", "input_tokens", "output_tokens", "cache_hits",
-                "estimated_cost_usd", "processing_seconds", "campaign_ids"]
+        cols = [
+            "group_by",
+            "group",
+            "contacts",
+            *FUNNEL,
+            "research_failed",
+            *rep["rates"],
+            "median_hours_to_reply",
+            "api_calls",
+            "input_tokens",
+            "output_tokens",
+            "cache_hits",
+            "estimated_cost_usd",
+            "processing_seconds",
+            "campaign_ids",
+        ]
         w = csv.writer(buf)
         w.writerow(cols)
         for b in rep["breakdown"]:
             u = b["usage"] or {}
-            w.writerow([blank(x) for x in [rep["filters"]["group_by"], b["group"], b["contacts"],
-                        *[b["counts"][s] for s in FUNNEL], b["counts"]["research_failed"], *b["rates"].values(),
-                        b["time_to_reply_hours"]["median"], u.get("api_calls"), u.get("input_tokens"),
-                        u.get("output_tokens"), u.get("cache_hits"), u.get("estimated_cost_usd"),
-                        u.get("processing_seconds"), " ".join(b["campaign_ids"])]])
+            w.writerow(
+                [
+                    blank(x)
+                    for x in [
+                        rep["filters"]["group_by"],
+                        b["group"],
+                        b["contacts"],
+                        *[b["counts"][s] for s in FUNNEL],
+                        b["counts"]["research_failed"],
+                        *b["rates"].values(),
+                        b["time_to_reply_hours"]["median"],
+                        u.get("api_calls"),
+                        u.get("input_tokens"),
+                        u.get("output_tokens"),
+                        u.get("cache_hits"),
+                        u.get("estimated_cost_usd"),
+                        u.get("processing_seconds"),
+                        " ".join(b["campaign_ids"]),
+                    ]
+                ]
+            )
     elif kind == "rows":
         stages = [s for s in FUNNEL if s != "scheduled"] + ["research_failed"]
         w = csv.writer(buf)
-        w.writerow(["campaign_id", "candidate_id", "name", "organization", "campaign_type", "sender", "template",
-                    "status", *[f"{s}_at" for s in stages]])
+        w.writerow(
+            [
+                "campaign_id",
+                "candidate_id",
+                "name",
+                "organization",
+                "campaign_type",
+                "sender",
+                "template",
+                "status",
+                *[f"{s}_at" for s in stages],
+            ]
+        )
         for r in rep["rows"]:
-            iso = lambda s: datetime.fromtimestamp(r["times"][s]).isoformat(timespec="seconds") if s in r["times"] else ""
-            w.writerow([blank(r[k]) for k in ("campaign_id", "candidate_id", "name", "organization",
-                                              "campaign_type", "sender", "template", "status")]
-                       + [iso(s) for s in stages])
+            iso = lambda s, row=r: (
+                datetime.fromtimestamp(row["times"][s]).isoformat(timespec="seconds") if s in row["times"] else ""
+            )
+            w.writerow(
+                [
+                    blank(r[k])
+                    for k in (
+                        "campaign_id",
+                        "candidate_id",
+                        "name",
+                        "organization",
+                        "campaign_type",
+                        "sender",
+                        "template",
+                        "status",
+                    )
+                ]
+                + [iso(s) for s in stages]
+            )
     else:
         raise ValueError("kind must be aggregate or rows")
     return buf.getvalue()

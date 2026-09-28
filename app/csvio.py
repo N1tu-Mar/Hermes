@@ -4,6 +4,7 @@ Import is two-step: parse() returns valid rows plus per-row errors, the UI
 shows that preview, and commit re-parses the same text so nothing is trusted
 from the browser. One bad row never rejects the file.
 """
+
 import csv
 import io
 
@@ -13,13 +14,34 @@ from .ledger import RELATIONSHIPS, name_key
 MAX_BYTES = 2_000_000
 MAX_ROWS = 5000
 COLUMNS = {
-    "contacts": ("name", "organization", "role", "email", "profile_url", "tags", "notes", "relationship",
-                 "do_not_contact", "dnc_reason", "owner"),
+    "contacts": (
+        "name",
+        "organization",
+        "role",
+        "email",
+        "profile_url",
+        "tags",
+        "notes",
+        "relationship",
+        "do_not_contact",
+        "dnc_reason",
+        "owner",
+    ),
     "candidates": ("name", "organization", "role", "email", "profile_url", "tags", "notes"),
 }
-ALIASES = {"company": "organization", "org": "organization", "institution": "organization", "title": "role",
-           "url": "profile_url", "profile": "profile_url", "website": "profile_url", "e_mail": "email",
-           "dnc": "do_not_contact", "status": "relationship", "full_name": "name"}
+ALIASES = {
+    "company": "organization",
+    "org": "organization",
+    "institution": "organization",
+    "title": "role",
+    "url": "profile_url",
+    "profile": "profile_url",
+    "website": "profile_url",
+    "e_mail": "email",
+    "dnc": "do_not_contact",
+    "status": "relationship",
+    "full_name": "name",
+}
 TRUE = {"1", "true", "yes", "y", "x"}
 
 
@@ -66,20 +88,33 @@ def parse(text, kind):
                 errors.append(f"relationship must be one of {', '.join(RELATIONSHIPS)}")
         if "do_not_contact" in row:
             row["do_not_contact"] = row["do_not_contact"].lower() in TRUE
-        for key in filter(None, (row.get("email"), normalize_url(row.get("profile_url")),
-                                 row.get("name") and name_key(row["name"], row.get("organization")))):
+        for key in filter(
+            None,
+            (
+                row.get("email"),
+                normalize_url(row.get("profile_url")),
+                row.get("name") and name_key(row["name"], row.get("organization")),
+            ),
+        ):
             if key in seen:
                 errors.append(f"duplicate of row {seen[key]}")
                 break
         if errors:
             invalid.append({"row": n, "errors": errors, "raw": row})
             continue
-        for key in filter(None, (row.get("email"), normalize_url(row.get("profile_url")),
-                                 name_key(row["name"], row.get("organization")))):
+        for key in filter(
+            None,
+            (row.get("email"), normalize_url(row.get("profile_url")), name_key(row["name"], row.get("organization"))),
+        ):
             seen[key] = n
         valid.append({"row": n, "data": {k: v for k, v in row.items() if v not in ("", None)}})
-    return {"kind": kind, "columns": known, "ignored_columns": [h for h in header if h not in COLUMNS[kind]],
-            "valid": valid, "invalid": invalid}
+    return {
+        "kind": kind,
+        "columns": known,
+        "ignored_columns": [h for h in header if h not in COLUMNS[kind]],
+        "valid": valid,
+        "invalid": invalid,
+    }
 
 
 def _cell(v):

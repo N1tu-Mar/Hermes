@@ -1,4 +1,5 @@
 """Reply-aware outreach acceptance flow against a mocked Gmail mailbox (no credentials, no network)."""
+
 import base64
 import email
 import time
@@ -48,9 +49,13 @@ class FakeMailbox:
     def add(self, thread_id, labels, headers, at=None):
         self.n += 1
         mid = f"m{self.n}"
-        self.msgs[mid] = {"id": mid, "threadId": thread_id or f"t{self.n}", "labelIds": labels,
-                          "internalDate": str(int((at or time.time()) * 1000)),
-                          "headers": {"Message-ID": f"<{mid}@fake>", **headers}}
+        self.msgs[mid] = {
+            "id": mid,
+            "threadId": thread_id or f"t{self.n}",
+            "labelIds": labels,
+            "internalDate": str(int((at or time.time()) * 1000)),
+            "headers": {"Message-ID": f"<{mid}@fake>", **headers},
+        }
         return self.msgs[mid]
 
     def send(self, draft_id):
@@ -60,8 +65,13 @@ class FakeMailbox:
         return self.add(thread_id, ["INBOX", "UNREAD"], {"From": frm, "Subject": "Re: hi", **headers})
 
     def _meta(self, m):
-        return {"id": m["id"], "threadId": m["threadId"], "labelIds": m["labelIds"], "internalDate": m["internalDate"],
-                "payload": {"headers": [{"name": k, "value": v} for k, v in m["headers"].items()]}}
+        return {
+            "id": m["id"],
+            "threadId": m["threadId"],
+            "labelIds": m["labelIds"],
+            "internalDate": m["internalDate"],
+            "payload": {"headers": [{"name": k, "value": v} for k, v in m["headers"].items()]},
+        }
 
     def _d_create(self, userId, body):
         raw = email.message_from_bytes(base64.urlsafe_b64decode(body["message"]["raw"]))
@@ -87,6 +97,7 @@ class FakeMailbox:
             if not msgs:
                 raise HttpError(404)
             return {"id": id, "messages": msgs}
+
         return _Req(run)
 
 
@@ -101,7 +112,10 @@ def build(tmp_path, mailbox, now=None):
 
 def initial_draft(client):
     """Research one professor, approve their draft, create the Gmail draft. Returns (cid, cand)."""
-    cid = make_campaign(client, "Rutgers/Princeton professors working on computational neurodevelopment who may work with undergraduates")
+    cid = make_campaign(
+        client,
+        "Rutgers/Princeton professors working on computational neurodevelopment who may work with undergraduates",
+    )
     client.post(f"/api/campaigns/{cid}/discover")
     wait(client, cid, lambda p: p["candidates"].get("discovered") and idle(p))
     cand = client.get(f"/api/campaigns/{cid}").json()["candidates"][0]["candidate_id"]
@@ -155,7 +169,9 @@ def test_reply_stops_sequence_and_unrelated_mail_is_ignored(tmp_path):
         q = client.get(f"/api/campaigns/{cid}/followups").json()
         assert not q["due"] and not q["upcoming"] and [f["status"] for f in q["completed"]] == ["cancelled"]
         seen = svc.cache.q("SELECT * FROM gmail_seen")
-        assert [(s["kind"], s["from_addr"], s["thread_id"]) for s in seen] == [("reply", "avery.lin@demo.example.edu", thread)]
+        assert [(s["kind"], s["from_addr"], s["thread_id"]) for s in seen] == [
+            ("reply", "avery.lin@demo.example.edu", thread)
+        ]
 
         # Even far past the due date, nothing is generated for a replied contact.
         svc.now = lambda: time.time() + 30 * DAY
@@ -222,8 +238,12 @@ def test_crash_mid_generation_reuses_same_step_and_caps_attempts(tmp_path):
         (f,) = client2.get(f"/api/campaigns/{cid}/followups").json()["blocked"]
         assert "max attempts" in f["issues"][0]
         # Human reschedules: attempts reset, one generation, still a single row.
-        assert client2.post(f"/api/campaigns/{cid}/followups/{cand}/0/reschedule",
-                            json={"due_at": time.time()}).status_code == 200
+        assert (
+            client2.post(
+                f"/api/campaigns/{cid}/followups/{cand}/0/reschedule", json={"due_at": time.time()}
+            ).status_code
+            == 200
+        )
         assert sync(client2, cid)["followups_queued"] == 1
         wait(client2, cid, idle)
         assert svc2.cache.q("SELECT count(*) n FROM followups")[0]["n"] == 1
@@ -241,10 +261,14 @@ def test_bounce_manual_outcome_audit_dnc_and_revoked_credentials(tmp_path):
         assert contact(client, cid, cand)["outcome"] == "bounced"
 
         # Manual correction is audited.
-        r = client.post(f"/api/campaigns/{cid}/contacts/{cand}/outcome",
-                        json={"outcome": "meeting_booked", "note": "they called instead"})
+        r = client.post(
+            f"/api/campaigns/{cid}/contacts/{cand}/outcome",
+            json={"outcome": "meeting_booked", "note": "they called instead"},
+        )
         assert r.json()["outcome"] == "meeting_booked"
-        assert client.post(f"/api/campaigns/{cid}/contacts/{cand}/outcome", json={"outcome": "maybe"}).status_code == 400
+        assert (
+            client.post(f"/api/campaigns/{cid}/contacts/{cand}/outcome", json={"outcome": "maybe"}).status_code == 400
+        )
         tl = client.get(f"/api/campaigns/{cid}/candidates/{cand}").json()["timeline"]
         audit = [e for e in tl if e["kind"] == "outcome" and e["source"] == "manual"]
         assert audit[-1]["detail"] == "bounced -> meeting_booked: they called instead"

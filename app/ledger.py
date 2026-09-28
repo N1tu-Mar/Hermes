@@ -10,6 +10,7 @@ silent merge; the candidate stays unlinked until a human resolves it, and the
 do-not-contact guard treats every contact named in an open review as a match.
 Only emails verified on a page or entered by the user are stored.
 """
+
 import json
 import re
 import sqlite3
@@ -21,12 +22,33 @@ from .contracts import EMAIL_RE, normalize_url
 
 RELATIONSHIPS = ("new", "contacted", "replied", "meeting", "declined", "bounced")
 # kind -> relationship it implies (None = history only). Auto kinds are written by the service.
-INTERACTIONS = {"draft": None, "approval": None, "gmail_draft": None, "invitation": "contacted",
-                "followup": "contacted", "reply": "replied", "meeting": "meeting", "decline": "declined",
-                "bounce": "bounced", "note": None}
+INTERACTIONS = {
+    "draft": None,
+    "approval": None,
+    "gmail_draft": None,
+    "invitation": "contacted",
+    "followup": "contacted",
+    "reply": "replied",
+    "meeting": "meeting",
+    "decline": "declined",
+    "bounce": "bounced",
+    "note": None,
+}
 MANUAL_INTERACTIONS = ("invitation", "followup", "reply", "meeting", "decline", "bounce", "note")
-CONTACT_EDITABLE = ("name", "organization", "role", "email", "profile_url", "notes", "tags", "relationship",
-                    "do_not_contact", "dnc_reason", "owner", "source")
+CONTACT_EDITABLE = (
+    "name",
+    "organization",
+    "role",
+    "email",
+    "profile_url",
+    "notes",
+    "tags",
+    "relationship",
+    "do_not_contact",
+    "dnc_reason",
+    "owner",
+    "source",
+)
 IDENTITY_FIELDS = ("display_name", "biography", "organization", "role", "signature", "links", "default_ask", "reply_to")
 TITLE_RE = re.compile(r"\b(dr|prof|professor|mr|ms|mrs|mx)\b\.?")
 
@@ -112,8 +134,10 @@ class Ledger:
             sql += " AND relationship=?"
             args.append(relationship)
         rows = [_contact(r) for r in self.c.q(sql + " ORDER BY updated_at DESC LIMIT ?", (*args, limit))]
-        counts = {r["contact_id"]: r["n"] for r in self.c.q(
-            "SELECT contact_id, COUNT(*) n FROM person_links GROUP BY contact_id")}
+        counts = {
+            r["contact_id"]: r["n"]
+            for r in self.c.q("SELECT contact_id, COUNT(*) n FROM person_links GROUP BY contact_id")
+        }
         for r in rows:
             r["campaign_count"] = counts.get(r["id"], 0)
         return rows
@@ -161,7 +185,9 @@ class Ledger:
         f.update(name_key=name_key(f["name"], f.get("organization")), created_at=now, updated_at=now)
         cols = ", ".join(f)
         with self.c.lock:
-            cur = self.c.db.execute(f"INSERT INTO people ({cols}) VALUES ({', '.join('?' * len(f))})", tuple(f.values()))
+            cur = self.c.db.execute(
+                f"INSERT INTO people ({cols}) VALUES ({', '.join('?' * len(f))})", tuple(f.values())
+            )
             return cur.lastrowid
 
     def update_contact(self, contact_id, patch):
@@ -172,7 +198,9 @@ class Ledger:
         if "name" in f or "organization" in f:
             f["name_key"] = name_key(f.get("name", current["name"]), f.get("organization", current["organization"]))
         if f.get("do_not_contact") and not current["do_not_contact"]:
-            self.log(contact_id, "note", f"Marked do-not-contact{': ' + f['dnc_reason'] if f.get('dnc_reason') else ''}")
+            self.log(
+                contact_id, "note", f"Marked do-not-contact{': ' + f['dnc_reason'] if f.get('dnc_reason') else ''}"
+            )
         elif f.get("do_not_contact") == 0 and current["do_not_contact"]:
             self.log(contact_id, "note", "Do-not-contact flag removed")
         f["updated_at"] = time.time()
@@ -181,11 +209,18 @@ class Ledger:
 
     def contact_detail(self, contact_id):
         c = self.contact(contact_id)
-        links = self.c.q("""SELECT l.campaign_id, l.candidate_id, l.linked_at, m.name, m.archived
+        links = self.c.q(
+            """SELECT l.campaign_id, l.candidate_id, l.linked_at, m.name, m.archived
                             FROM person_links l LEFT JOIN campaign_meta m USING (campaign_id)
-                            WHERE l.contact_id=? ORDER BY l.linked_at""", (contact_id,))
-        return {"contact": c, "campaigns": links, "timeline": self.timeline(contact_id),
-                "reviews": [r for r in self.reviews() if contact_id in r["options"]]}
+                            WHERE l.contact_id=? ORDER BY l.linked_at""",
+            (contact_id,),
+        )
+        return {
+            "contact": c,
+            "campaigns": links,
+            "timeline": self.timeline(contact_id),
+            "reviews": [r for r in self.reviews() if contact_id in r["options"]],
+        }
 
     # ------------------------------------------------------------ matching
     def _ids(self, sql, args):
@@ -223,66 +258,113 @@ class Ledger:
     def _fill(self, contact_id, email=None, profile_url=None, role=None):
         """Add missing identifiers to a matched contact; never overwrite."""
         c = self.contact(contact_id)
-        patch = {k: v for k, v in (("email", norm_email(email)), ("profile_url", canonical_url(profile_url)),
-                                   ("role", role)) if v and not c[k]}
+        patch = {
+            k: v
+            for k, v in (("email", norm_email(email)), ("profile_url", canonical_url(profile_url)), ("role", role))
+            if v and not c[k]
+        }
         if patch.get("email") and self._ids("SELECT id FROM people WHERE email=?", (patch["email"],)):
             patch.pop("email")
         if patch:
             self.update_contact(contact_id, patch)
 
     def _open_review(self, campaign_id, candidate_id, person, options, reason):
-        dup = self.c.q("SELECT id FROM person_reviews WHERE status='open' AND campaign_id IS ? AND candidate_id IS ? "
-                       "AND person=?", (campaign_id, candidate_id, json.dumps(person, sort_keys=True)))
+        dup = self.c.q(
+            "SELECT id FROM person_reviews WHERE status='open' AND campaign_id IS ? AND candidate_id IS ? AND person=?",
+            (campaign_id, candidate_id, json.dumps(person, sort_keys=True)),
+        )
         if dup:
             return dup[0]["id"]
         with self.c.lock:
             return self.c.db.execute(
                 "INSERT INTO person_reviews (campaign_id, candidate_id, person, options, reason, created_at) "
-                "VALUES (?,?,?,?,?,?)", (campaign_id, candidate_id, json.dumps(person, sort_keys=True),
-                                         json.dumps(list(options)), reason, time.time())).lastrowid
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    campaign_id,
+                    candidate_id,
+                    json.dumps(person, sort_keys=True),
+                    json.dumps(list(options)),
+                    reason,
+                    time.time(),
+                ),
+            ).lastrowid
 
     def linked(self, campaign_id, candidate_id):
-        rows = self.c.q("SELECT contact_id FROM person_links WHERE campaign_id=? AND candidate_id=?",
-                        (campaign_id, candidate_id))
+        rows = self.c.q(
+            "SELECT contact_id FROM person_links WHERE campaign_id=? AND candidate_id=?", (campaign_id, candidate_id)
+        )
         return rows[0]["contact_id"] if rows else None
 
     def campaign_contacts(self, campaign_id):
         """candidate_id -> linked contact summary, plus ids waiting on a review."""
-        rows = self.c.q("""SELECT l.candidate_id, p.id, p.do_not_contact, p.relationship, p.tags FROM person_links l
-                           JOIN people p ON p.id=l.contact_id WHERE l.campaign_id=?""", (campaign_id,))
-        linked = {r["candidate_id"]: {"contact_id": r["id"], "do_not_contact": bool(r["do_not_contact"]),
-                                      "relationship": r["relationship"], "tags": json.loads(r["tags"])} for r in rows}
-        review = {r["candidate_id"] for r in self.c.q(
-            "SELECT candidate_id FROM person_reviews WHERE status='open' AND campaign_id=?", (campaign_id,))}
+        rows = self.c.q(
+            """SELECT l.candidate_id, p.id, p.do_not_contact, p.relationship, p.tags FROM person_links l
+                           JOIN people p ON p.id=l.contact_id WHERE l.campaign_id=?""",
+            (campaign_id,),
+        )
+        linked = {
+            r["candidate_id"]: {
+                "contact_id": r["id"],
+                "do_not_contact": bool(r["do_not_contact"]),
+                "relationship": r["relationship"],
+                "tags": json.loads(r["tags"]),
+            }
+            for r in rows
+        }
+        review = {
+            r["candidate_id"]
+            for r in self.c.q(
+                "SELECT candidate_id FROM person_reviews WHERE status='open' AND campaign_id=?", (campaign_id,)
+            )
+        }
         return linked, review
 
     def _link(self, campaign_id, candidate_id, contact_id):
-        self.c.x("INSERT OR REPLACE INTO person_links VALUES (?,?,?,?)", (campaign_id, candidate_id, contact_id, time.time()))
+        self.c.x(
+            "INSERT OR REPLACE INTO person_links VALUES (?,?,?,?)", (campaign_id, candidate_id, contact_id, time.time())
+        )
 
     def link_candidate(self, campaign_id, cand, email=None, source=None):
         """Link a campaign candidate to a global contact. Returns contact id, or None when sent to review."""
-        person = {"name": cand.get("name"), "organization": cand.get("organization"), "role": cand.get("role"),
-                  "profile_url": canonical_url(cand.get("profile_url")), "email": norm_email(email)}
+        person = {
+            "name": cand.get("name"),
+            "organization": cand.get("organization"),
+            "role": cand.get("role"),
+            "profile_url": canonical_url(cand.get("profile_url")),
+            "email": norm_email(email),
+        }
         with self.lock:
             cur = self.linked(campaign_id, cand["candidate_id"])
             if cur:
                 if person["email"]:
                     owner = self._ids("SELECT id FROM people WHERE email=?", (person["email"],))
                     if owner and owner[0] != cur:
-                        self._open_review(campaign_id, cand["candidate_id"], person, [cur, owner[0]],
-                                          "verified email belongs to a different contact")
+                        self._open_review(
+                            campaign_id,
+                            cand["candidate_id"],
+                            person,
+                            [cur, owner[0]],
+                            "verified email belongs to a different contact",
+                        )
                         return cur
                 self._fill(cur, person["email"], person["profile_url"], person["role"])
                 return cur
-            if self.c.q("SELECT 1 FROM person_reviews WHERE status='open' AND campaign_id=? AND candidate_id=?",
-                        (campaign_id, cand["candidate_id"])):
+            if self.c.q(
+                "SELECT 1 FROM person_reviews WHERE status='open' AND campaign_id=? AND candidate_id=?",
+                (campaign_id, cand["candidate_id"]),
+            ):
                 return None  # already waiting on a human
             m = self.match(person["name"], person["organization"], person["email"], person["profile_url"])
             if m[0] == "review":
                 self._open_review(campaign_id, cand["candidate_id"], person, m[1], m[2])
                 return None
-            cid = m[1] if m[0] == "match" else self.create_contact(
-                {k: v for k, v in person.items() if v}, source=source or f"campaign:{campaign_id}")
+            cid = (
+                m[1]
+                if m[0] == "match"
+                else self.create_contact(
+                    {k: v for k, v in person.items() if v}, source=source or f"campaign:{campaign_id}"
+                )
+            )
             if m[0] == "match":
                 self._fill(cid, person["email"], person["profile_url"], person["role"])
             self._link(campaign_id, cand["candidate_id"], cid)
@@ -291,7 +373,9 @@ class Ledger:
     def upsert_person(self, fields, source):
         """CSV/manual entry without a campaign. -> (contact_id | None, status)."""
         with self.lock:
-            m = self.match(fields.get("name"), fields.get("organization"), fields.get("email"), fields.get("profile_url"))
+            m = self.match(
+                fields.get("name"), fields.get("organization"), fields.get("email"), fields.get("profile_url")
+            )
             if m[0] == "review":
                 person = {k: fields.get(k) for k in ("name", "organization", "role", "profile_url", "email")}
                 self._open_review(None, None, person, m[1], m[2])
@@ -322,8 +406,12 @@ class Ledger:
         rows = self.c.q(sql + " ORDER BY created_at", args)
         for r in rows:
             r["person"], r["options"] = json.loads(r["person"]), json.loads(r["options"])
-            r["option_contacts"] = [self.c.q("SELECT id, name, organization, email, profile_url, do_not_contact "
-                                             "FROM people WHERE id=?", (i,))[0] for i in r["options"]]
+            r["option_contacts"] = [
+                self.c.q(
+                    "SELECT id, name, organization, email, profile_url, do_not_contact FROM people WHERE id=?", (i,)
+                )[0]
+                for i in r["options"]
+            ]
         return rows
 
     def resolve_review(self, review_id, contact_id=None):
@@ -343,8 +431,10 @@ class Ledger:
                 self._fill(contact_id, person.get("email"), person.get("profile_url"), person.get("role"))
             if r["candidate_id"]:
                 self._link(r["campaign_id"], r["candidate_id"], contact_id)
-            self.c.x("UPDATE person_reviews SET status='resolved', resolved_contact_id=?, resolved_at=? WHERE id=?",
-                     (contact_id, time.time(), review_id))
+            self.c.x(
+                "UPDATE person_reviews SET status='resolved', resolved_contact_id=?, resolved_at=? WHERE id=?",
+                (contact_id, time.time(), review_id),
+            )
             return self.contact(contact_id)
 
     # ------------------------------------------------------------ do-not-contact
@@ -352,15 +442,20 @@ class Ledger:
         """Reason string when this candidate must not be contacted, else None."""
         cid = self.linked(campaign_id, candidate_id)
         ids = [cid] if cid else []
-        for r in self.c.q("SELECT options FROM person_reviews WHERE status='open' AND campaign_id=? AND candidate_id=?",
-                          (campaign_id, candidate_id)):
+        for r in self.c.q(
+            "SELECT options FROM person_reviews WHERE status='open' AND campaign_id=? AND candidate_id=?",
+            (campaign_id, candidate_id),
+        ):
             ids += json.loads(r["options"])
         for i in ids:
             c = self.contact(i)
             if c["do_not_contact"]:
                 why = f" ({c['dnc_reason']})" if c["dnc_reason"] else ""
-                return (f"{c['name']} is marked do-not-contact{why}" if i == cid else
-                        f"possible match to do-not-contact contact {c['name']}; resolve the contact review first")
+                return (
+                    f"{c['name']} is marked do-not-contact{why}"
+                    if i == cid
+                    else f"possible match to do-not-contact contact {c['name']}; resolve the contact review first"
+                )
         return None
 
     # ------------------------------------------------------------ interactions
@@ -368,9 +463,19 @@ class Ledger:
         if kind not in INTERACTIONS:
             raise ValueError(f"kind must be one of {', '.join(INTERACTIONS)}")
         at = float(at) if at else time.time()
-        self.c.x("INSERT INTO interactions (contact_id, campaign_id, candidate_id, kind, detail, meta, at) "
-                 "VALUES (?,?,?,?,?,?,?)", (contact_id, campaign_id, candidate_id, kind, (detail or "")[:5000],
-                                            json.dumps(meta) if meta else None, at))
+        self.c.x(
+            "INSERT INTO interactions (contact_id, campaign_id, candidate_id, kind, detail, meta, at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                contact_id,
+                campaign_id,
+                candidate_id,
+                kind,
+                (detail or "")[:5000],
+                json.dumps(meta) if meta else None,
+                at,
+            ),
+        )
         rel = INTERACTIONS[kind]
         if rel:
             sets, args = "relationship=?, updated_at=?", [rel, time.time()]
@@ -386,8 +491,11 @@ class Ledger:
             self.log(cid, kind, detail, campaign_id, candidate_id, meta)
 
     def timeline(self, contact_id):
-        rows = self.c.q("""SELECT i.*, m.name AS campaign_name FROM interactions i
-                           LEFT JOIN campaign_meta m USING (campaign_id) WHERE contact_id=? ORDER BY at, id""", (contact_id,))
+        rows = self.c.q(
+            """SELECT i.*, m.name AS campaign_name FROM interactions i
+                           LEFT JOIN campaign_meta m USING (campaign_id) WHERE contact_id=? ORDER BY at, id""",
+            (contact_id,),
+        )
         for r in rows:
             r["meta"] = json.loads(r["meta"]) if r["meta"] else None
         return rows
@@ -434,8 +542,9 @@ class Ledger:
         f = self._clean_identity(data)
         f["created_at"] = f["updated_at"] = time.time()
         with self.c.lock:
-            return self.c.db.execute(f"INSERT INTO identities ({', '.join(f)}) VALUES ({', '.join('?' * len(f))})",
-                                     tuple(f.values())).lastrowid
+            return self.c.db.execute(
+                f"INSERT INTO identities ({', '.join(f)}) VALUES ({', '.join('?' * len(f))})", tuple(f.values())
+            ).lastrowid
 
     def update_identity(self, identity_id, data):
         self.identity(identity_id)
@@ -449,7 +558,7 @@ class Ledger:
         try:
             self.c.x("DELETE FROM identities WHERE id=?", (identity_id,))
         except sqlite3.IntegrityError:
-            raise ValueError("identity is still referenced by an attachment or reusable content item")
+            raise ValueError("identity is still referenced by an attachment or reusable content item") from None
 
     # ------------------------------------------------------------ campaign metadata
     def campaign_meta(self, campaign_id):
@@ -459,14 +568,21 @@ class Ledger:
     def set_campaign_meta(self, campaign_id, **fields):
         self.c.x("INSERT OR IGNORE INTO campaign_meta (campaign_id) VALUES (?)", (campaign_id,))
         fields["updated_at"] = time.time()
-        self.c.x(f"UPDATE campaign_meta SET {', '.join(k + '=?' for k in fields)} WHERE campaign_id=?",
-                 (*fields.values(), campaign_id))
+        self.c.x(
+            f"UPDATE campaign_meta SET {', '.join(k + '=?' for k in fields)} WHERE campaign_id=?",
+            (*fields.values(), campaign_id),
+        )
 
     def purge_campaign(self, campaign_id):
         """Drop per-campaign SQLite rows. Contacts and their interaction history survive."""
-        for sql in ("DELETE FROM drafts WHERE campaign_id=?", "DELETE FROM jobs WHERE campaign_id=?",
-                    "DELETE FROM usage WHERE campaign_id=?", "DELETE FROM events WHERE campaign_id=?",
-                    "DELETE FROM person_links WHERE campaign_id=?", "DELETE FROM campaign_meta WHERE campaign_id=?",
-                    "DELETE FROM person_reviews WHERE campaign_id=? AND status='open'"):
+        for sql in (
+            "DELETE FROM drafts WHERE campaign_id=?",
+            "DELETE FROM jobs WHERE campaign_id=?",
+            "DELETE FROM usage WHERE campaign_id=?",
+            "DELETE FROM events WHERE campaign_id=?",
+            "DELETE FROM person_links WHERE campaign_id=?",
+            "DELETE FROM campaign_meta WHERE campaign_id=?",
+            "DELETE FROM person_reviews WHERE campaign_id=? AND status='open'",
+        ):
             self.c.x(sql, (campaign_id,))
         self.c.x("DELETE FROM research_cache WHERE key LIKE ?", (campaign_id + ":%",))

@@ -133,7 +133,9 @@ class Accounts:
     # ------------------------------------------------------------ failure throttling (durable, bounded)
     def _status_locked(self, scope, key, limit, now):
         """Caller holds self.lock. Returns (locked, retry_after_seconds)."""
-        row = self.db.execute("SELECT count, window_start FROM login_failures WHERE scope=? AND key=?", (scope, key)).fetchone()
+        row = self.db.execute(
+            "SELECT count, window_start FROM login_failures WHERE scope=? AND key=?", (scope, key)
+        ).fetchone()
         if not row or now - row["window_start"] > LOCKOUT:
             return False, 0.0
         if row["count"] < limit:
@@ -141,7 +143,9 @@ class Accounts:
         return True, max(0.0, LOCKOUT - (now - row["window_start"]))
 
     def _bump_failure_locked(self, scope, key, now):
-        row = self.db.execute("SELECT count, window_start FROM login_failures WHERE scope=? AND key=?", (scope, key)).fetchone()
+        row = self.db.execute(
+            "SELECT count, window_start FROM login_failures WHERE scope=? AND key=?", (scope, key)
+        ).fetchone()
         if row and now - row["window_start"] <= LOCKOUT:
             count, window_start = row["count"] + 1, row["window_start"]
         else:
@@ -260,9 +264,11 @@ class Accounts:
             glob_locked, _ = self._status_locked("global", GLOBAL_KEY, GLOBAL_MAX_FAILURES, now)
             blocked = acct_locked or src_locked or glob_locked
 
-            row = None if blocked else self.db.execute(
-                "SELECT id, pw_hash, disabled FROM users WHERE username=?", (username,)
-            ).fetchone()
+            row = (
+                None
+                if blocked
+                else self.db.execute("SELECT id, pw_hash, disabled FROM users WHERE username=?", (username,)).fetchone()
+            )
             ok = False if blocked else check_password(password, row["pw_hash"] if row else _DUMMY_HASH)
 
             if blocked or not ok or not row or row["disabled"]:

@@ -202,15 +202,32 @@ class DemoModel:
                 url = f"{BASE}/{s}"
                 ev = [{"claim": f, "source_url": url, "source_locator": "profile page"} for f in facts]
                 if not ok:  # unreachable page: model has nothing verifiable to cite
-                    ev = [{"claim": facts[0], "source_url": "https://unverified.example.net/guess",
-                           "source_locator": None}]
-                return ({"contact_email": email, "contact_source_url": url if email else None,
-                         "summary": f"{name} ({role}, {org}) works on {', '.join(interests)}.",
-                         "research_interests": interests,
-                         "fit_reason": f"Their work on {interests[0]} matches the requested focus.",
-                         "evidence": ev}, {url} if ok else set())
-        return {"contact_email": None, "contact_source_url": None, "summary": "", "research_interests": [],
-                "fit_reason": "", "evidence": []}, set()
+                    ev = [
+                        {
+                            "claim": facts[0],
+                            "source_url": "https://unverified.example.net/guess",
+                            "source_locator": None,
+                        }
+                    ]
+                return (
+                    {
+                        "contact_email": email,
+                        "contact_source_url": url if email else None,
+                        "summary": f"{name} ({role}, {org}) works on {', '.join(interests)}.",
+                        "research_interests": interests,
+                        "fit_reason": f"Their work on {interests[0]} matches the requested focus.",
+                        "evidence": ev,
+                    },
+                    {url} if ok else set(),
+                )
+        return {
+            "contact_email": None,
+            "contact_source_url": None,
+            "summary": "",
+            "research_interests": [],
+            "fit_reason": "",
+            "evidence": [],
+        }, set()
 
     def _draft(self, text):
         o = json.loads(text)["outline"]
@@ -219,15 +236,22 @@ class DemoModel:
         lines = [o["greeting"], "", f"{sender}."]
         prior = o.get("prior_contact")
         if prior:
-            lines.append(f"I'm following up on my email from {prior['sent_on']} about \"{prior['original_subject']}\".")
+            lines.append(f'I\'m following up on my email from {prior["sent_on"]} about "{prior["original_subject"]}".')
         lines.append(f"I came across this on your page: {facts[0]['claim']}")
         if o.get("specific_connection"):
             lines.append(o["specific_connection"])
         if o.get("event_details"):
             lines.append(f"Event details: {o['event_details']}.")
-        lines += [f"I wanted to ask {o['ask']}.", "", o["signoff"], sender.split(",")[0].replace("I am ", "").replace("I'm ", "")]
+        lines += [
+            f"I wanted to ask {o['ask']}.",
+            "",
+            o["signoff"],
+            sender.split(",")[0].replace("I am ", "").replace("I'm ", ""),
+        ]
         subject = o.get("template_subject") or {
-            "research_professor": "Undergraduate research interest", "startup": "Quick note from a Rutgers student",
-            "speaker_invite": "Speaker invitation from Rutgers", "rsvp_followup": "Following up on our invitation",
+            "research_professor": "Undergraduate research interest",
+            "startup": "Quick note from a Rutgers student",
+            "speaker_invite": "Speaker invitation from Rutgers",
+            "rsvp_followup": "Following up on our invitation",
         }.get(o["template"], "A quick note from Rutgers")
         return {"subject": subject, "body": "\n".join(lines), "evidence_ids_used": [facts[0]["id"]]}

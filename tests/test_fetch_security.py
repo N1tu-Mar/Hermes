@@ -9,19 +9,19 @@ from app.research import Fetcher, FetchError
 from app.url_security import UnsafeURLError, resolve_target, split_target
 
 LITERAL_UNSAFE = [
-    "http://127.0.0.1/",           # loopback v4
-    "http://0.0.0.0/",             # unspecified v4
-    "http://10.1.2.3/",            # private v4
-    "http://192.168.1.1/",         # private v4
-    "http://172.16.0.5/",          # private v4
-    "http://169.254.169.254/",     # link-local v4 (cloud metadata)
-    "http://224.0.0.1/",           # multicast v4
-    "http://240.0.0.1/",           # reserved v4
-    "http://[::1]/",               # loopback v6
-    "http://[::]/",                # unspecified v6
-    "http://[fd00::1]/",           # unique-local (private) v6
-    "http://[fe80::1]/",           # link-local v6
-    "http://[ff02::1]/",           # multicast v6
+    "http://127.0.0.1/",  # loopback v4
+    "http://0.0.0.0/",  # unspecified v4
+    "http://10.1.2.3/",  # private v4
+    "http://192.168.1.1/",  # private v4
+    "http://172.16.0.5/",  # private v4
+    "http://169.254.169.254/",  # link-local v4 (cloud metadata)
+    "http://224.0.0.1/",  # multicast v4
+    "http://240.0.0.1/",  # reserved v4
+    "http://[::1]/",  # loopback v6
+    "http://[::]/",  # unspecified v6
+    "http://[fd00::1]/",  # unique-local (private) v6
+    "http://[fe80::1]/",  # link-local v6
+    "http://[ff02::1]/",  # multicast v6
     "http://[::ffff:127.0.0.1]/",  # v4-mapped loopback
 ]
 
@@ -37,13 +37,16 @@ def test_public_literal_ip_allowed():
     assert ip == "93.184.215.14" and port == 80
 
 
-@pytest.mark.parametrize("url", [
-    "http://user:pass@example.com/",
-    "http://user@example.com/",
-    "ftp://example.com/",
-    "file:///etc/passwd",
-    "http:///no-host",
-])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://user:pass@example.com/",
+        "http://user@example.com/",
+        "ftp://example.com/",
+        "file:///etc/passwd",
+        "http:///no-host",
+    ],
+)
 def test_credentials_and_unsupported_schemes_rejected(url):
     with pytest.raises(UnsafeURLError):
         split_target(url)

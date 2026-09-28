@@ -1,10 +1,10 @@
 """people/person_links as the single canonical contact model: legacy migration, id collisions,
 global-vs-campaign DNC parity, and ambiguous-match reviews. See app/cache.py: _migrate_v3."""
+
 import json
 import sqlite3
 import time
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app import demo
@@ -38,25 +38,57 @@ def _legacy_db(path):
 
 def _insert_contact(db, **fields):
     now = time.time()
-    row = {"name": "", "organization": None, "role": None, "email": None, "profile_url": None, "name_key": "",
-          "notes": "", "tags": "[]", "relationship": "new", "do_not_contact": 0, "dnc_reason": None,
-          "last_contacted_at": None, "owner": None, "source": "campaign", "created_at": now, "updated_at": now,
-          **fields}
+    row = {
+        "name": "",
+        "organization": None,
+        "role": None,
+        "email": None,
+        "profile_url": None,
+        "name_key": "",
+        "notes": "",
+        "tags": "[]",
+        "relationship": "new",
+        "do_not_contact": 0,
+        "dnc_reason": None,
+        "last_contacted_at": None,
+        "owner": None,
+        "source": "campaign",
+        "created_at": now,
+        "updated_at": now,
+        **fields,
+    }
     cols = list(row)
-    cur = db.execute(f"INSERT INTO contacts ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
-                     [row[c] for c in cols])
+    cur = db.execute(
+        f"INSERT INTO contacts ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols]
+    )
     return cur.lastrowid
 
 
 def _insert_person(db, **fields):
     now = time.time()
-    row = {"name": "", "organization": None, "role": None, "email": None, "profile_url": None, "name_key": "",
-          "notes": "", "tags": "[]", "relationship": "new", "do_not_contact": 0, "dnc_reason": None,
-          "last_contacted_at": None, "owner": None, "source": "manual", "created_at": now, "updated_at": now,
-          **fields}
+    row = {
+        "name": "",
+        "organization": None,
+        "role": None,
+        "email": None,
+        "profile_url": None,
+        "name_key": "",
+        "notes": "",
+        "tags": "[]",
+        "relationship": "new",
+        "do_not_contact": 0,
+        "dnc_reason": None,
+        "last_contacted_at": None,
+        "owner": None,
+        "source": "manual",
+        "created_at": now,
+        "updated_at": now,
+        **fields,
+    }
     cols = list(row)
-    cur = db.execute(f"INSERT INTO people ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
-                     [row[c] for c in cols])
+    cur = db.execute(
+        f"INSERT INTO people ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols]
+    )
     return cur.lastrowid
 
 
@@ -66,23 +98,47 @@ def test_legacy_fixture_migrates_without_loss_or_duplication(tmp_path):
     db = _legacy_db(path)
 
     # A legacy DNC contact never seen by the ledger: notes, tags, DNC, and a campaign link to preserve.
-    dnc_id = _insert_contact(db, name="Jane Doe", organization="Rutgers", role="Prof",
-                             email="jane@rutgers.example.edu", profile_url="https://rutgers.example.edu/jane",
-                             name_key="jane doe|rutgers", notes="Asked to stop emailing.", tags='["alumni"]',
-                             do_not_contact=1, dnc_reason="asked to stop")
+    dnc_id = _insert_contact(
+        db,
+        name="Jane Doe",
+        organization="Rutgers",
+        role="Prof",
+        email="jane@rutgers.example.edu",
+        profile_url="https://rutgers.example.edu/jane",
+        name_key="jane doe|rutgers",
+        notes="Asked to stop emailing.",
+        tags='["alumni"]',
+        do_not_contact=1,
+        dnc_reason="asked to stop",
+    )
     db.execute("INSERT INTO contact_links VALUES (?,?,?,?)", ("cmp_20260101_aaaaaaaa", "cand_1", dnc_id, time.time()))
-    db.execute("INSERT INTO interactions (contact_id,campaign_id,candidate_id,kind,detail,meta,at) "
-              "VALUES (?,?,?,?,?,?,?)", (dnc_id, "cmp_20260101_aaaaaaaa", "cand_1", "note", "legacy note", None,
-                                         time.time()))
+    db.execute(
+        "INSERT INTO interactions (contact_id,campaign_id,candidate_id,kind,detail,meta,at) VALUES (?,?,?,?,?,?,?)",
+        (dnc_id, "cmp_20260101_aaaaaaaa", "cand_1", "note", "legacy note", None, time.time()),
+    )
 
     # A legacy contact that should merge into an existing ledger person by verified email: extra
     # notes/tags/relationship must survive onto the merged row, never overwrite what's already there.
-    person_id = _insert_person(db, name="Ada Park", organization="NYU", email="ada@nyu.example.edu",
-                               name_key="ada park|nyu", notes="Met at HackRU.", tags='["ml"]',
-                               relationship="contacted")
-    dup_id = _insert_contact(db, name="Ada Park", organization="NYU", email="ada@nyu.example.edu",
-                             name_key="ada park|nyu", notes="Interested in mentoring.", tags='["mentor"]',
-                             relationship="replied")
+    person_id = _insert_person(
+        db,
+        name="Ada Park",
+        organization="NYU",
+        email="ada@nyu.example.edu",
+        name_key="ada park|nyu",
+        notes="Met at HackRU.",
+        tags='["ml"]',
+        relationship="contacted",
+    )
+    _insert_contact(
+        db,
+        name="Ada Park",
+        organization="NYU",
+        email="ada@nyu.example.edu",
+        name_key="ada park|nyu",
+        notes="Interested in mentoring.",
+        tags='["mentor"]',
+        relationship="replied",
+    )
     db.commit()
     db.close()
 
@@ -134,21 +190,27 @@ def test_colliding_legacy_and_canonical_ids_are_kept_separate(tmp_path):
     db = _legacy_db(path)
 
     # Both get id 1 in their own table: a guaranteed collision once merged into one id space.
-    person_id = _insert_person(db, name="Ada Park", organization="NYU", email="ada@nyu.example.edu",
-                               name_key="ada park|nyu")
-    contact_id = _insert_contact(db, name="Jane Doe", organization="Rutgers", email="jane@rutgers.example.edu",
-                                 name_key="jane doe|rutgers")
+    person_id = _insert_person(
+        db, name="Ada Park", organization="NYU", email="ada@nyu.example.edu", name_key="ada park|nyu"
+    )
+    contact_id = _insert_contact(
+        db, name="Jane Doe", organization="Rutgers", email="jane@rutgers.example.edu", name_key="jane doe|rutgers"
+    )
     assert person_id == contact_id == 1
 
-    db.execute("INSERT INTO contact_links VALUES (?,?,?,?)", ("cmp_20260101_bbbbbbbb", "cand_9", contact_id,
-                                                               time.time()))
+    db.execute(
+        "INSERT INTO contact_links VALUES (?,?,?,?)", ("cmp_20260101_bbbbbbbb", "cand_9", contact_id, time.time())
+    )
     # A campaign-scoped legacy interaction (contact_id=1 means Jane, via contacts) ...
-    db.execute("INSERT INTO interactions (contact_id,campaign_id,candidate_id,kind,detail,meta,at) "
-              "VALUES (?,?,?,?,?,?,?)", (contact_id, "cmp_20260101_bbbbbbbb", "cand_9", "note", "for jane", None,
-                                         time.time()))
+    db.execute(
+        "INSERT INTO interactions (contact_id,campaign_id,candidate_id,kind,detail,meta,at) VALUES (?,?,?,?,?,?,?)",
+        (contact_id, "cmp_20260101_bbbbbbbb", "cand_9", "note", "for jane", None, time.time()),
+    )
     # ... and a global, contact-API-style interaction (contact_id=1 means Ada, via people).
-    db.execute("INSERT INTO interactions (contact_id,campaign_id,candidate_id,kind,detail,meta,at) "
-              "VALUES (?,?,?,?,?,?,?)", (person_id, None, None, "note", "for ada", None, time.time()))
+    db.execute(
+        "INSERT INTO interactions (contact_id,campaign_id,candidate_id,kind,detail,meta,at) VALUES (?,?,?,?,?,?,?)",
+        (person_id, None, None, "note", "for ada", None, time.time()),
+    )
     db.commit()
     db.close()
 
@@ -170,13 +232,21 @@ def test_colliding_legacy_and_canonical_ids_are_kept_separate(tmp_path):
 def test_ambiguous_legacy_contact_opens_a_review_instead_of_guessing(tmp_path):
     path = tmp_path / "legacy.sqlite3"
     db = _legacy_db(path)
-    a = _insert_person(db, name="Avery Lin", organization="Rutgers", email="a1@example.com",
-                       name_key="avery lin|rutgers")
-    b = _insert_person(db, name="Avery Lin", organization="Rutgers", email="a2@example.com",
-                       name_key="avery lin|rutgers")
+    a = _insert_person(
+        db, name="Avery Lin", organization="Rutgers", email="a1@example.com", name_key="avery lin|rutgers"
+    )
+    b = _insert_person(
+        db, name="Avery Lin", organization="Rutgers", email="a2@example.com", name_key="avery lin|rutgers"
+    )
     # same name+org as both existing people, no email/url to disambiguate: must not silently pick one.
-    _insert_contact(db, name="Avery Lin", organization="Rutgers", name_key="avery lin|rutgers",
-                    do_not_contact=1, dnc_reason="legacy dnc")
+    _insert_contact(
+        db,
+        name="Avery Lin",
+        organization="Rutgers",
+        name_key="avery lin|rutgers",
+        do_not_contact=1,
+        dnc_reason="legacy dnc",
+    )
     db.commit()
     db.close()
 
@@ -205,8 +275,10 @@ def test_candidate_dnc_immediately_appears_in_global_contacts(tmp_path):
         cand = next(iter(people_of(client, cid).values()))
         assert not any(c["do_not_contact"] for c in client.get("/api/contacts").json())
 
-        r = client.put(f"/api/campaigns/{cid}/candidates/{cand['candidate_id']}/do-not-contact",
-                       json={"do_not_contact": True, "reason": "asked not to be emailed"})
+        r = client.put(
+            f"/api/campaigns/{cid}/candidates/{cand['candidate_id']}/do-not-contact",
+            json={"do_not_contact": True, "reason": "asked not to be emailed"},
+        )
         assert r.status_code == 200
 
         contact_id = people_of(client, cid)[cand["name"]]["contact_id"]
